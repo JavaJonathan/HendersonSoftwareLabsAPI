@@ -15,7 +15,7 @@ public class JwtTokenService : IJwtTokenService
         _configuration = configuration;
     }
 
-    public (string Token, DateTime ExpiresAtUtc) CreateToken(ApplicationUser user)
+    public (string Token, DateTime ExpiresAtUtc) CreateToken(ApplicationUser user, IList<string> roles)
     {
         var jwtSection = _configuration.GetSection("Jwt");
         var key = jwtSection["Key"] ?? throw new InvalidOperationException("Jwt:Key is not configured.");
@@ -31,6 +31,8 @@ public class JwtTokenService : IJwtTokenService
             new(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
+
+        claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
         var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
         var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256);

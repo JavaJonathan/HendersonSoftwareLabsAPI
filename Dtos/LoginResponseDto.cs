@@ -6,4 +6,5 @@ public class LoginResponseDto
     public DateTime ExpiresAtUtc { get; set; }
     public string Email { get; set; } = string.Empty;
     public string CompanyName { get; set; } = string.Empty;
+    public bool IsAdmin { get; set; }
 }

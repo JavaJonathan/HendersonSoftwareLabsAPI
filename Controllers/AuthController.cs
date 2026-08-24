@@ -31,14 +31,16 @@ public class AuthController : ControllerBase
             return Unauthorized(new { message = "Invalid email or password." });
         }
 
-        var (token, expiresAtUtc) = _jwtTokenService.CreateToken(user);
+        var roles = await _userManager.GetRolesAsync(user);
+        var (token, expiresAtUtc) = _jwtTokenService.CreateToken(user, roles);
 
         return Ok(new LoginResponseDto
         {
             Token = token,
             ExpiresAtUtc = expiresAtUtc,
             Email = user.Email ?? string.Empty,
-            CompanyName = user.CompanyName
+            CompanyName = user.CompanyName,
+            IsAdmin = roles.Contains("Admin")
         });
     }
 
@@ -58,11 +60,14 @@ public class AuthController : ControllerBase
             return Unauthorized();
         }
 
+        var roles = await _userManager.GetRolesAsync(user);
+
         return Ok(new MeResponseDto
         {
             Email = user.Email ?? string.Empty,
             CompanyName = user.CompanyName,
-            ContactName = user.ContactName
+            ContactName = user.ContactName,
+            IsAdmin = roles.Contains("Admin")
         });
     }
 }

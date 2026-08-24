@@ -82,99 +82,59 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
-// Command-mode branch: manual client/project provisioning without an admin UI.
+// Ensure the Admin role exists. Idempotent, runs on every startup (including CLI invocations)
+// so create-admin can rely on the role already being present.
+using (var roleSeedScope = app.Services.CreateScope())
+{
+    var roleManager = roleSeedScope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+    if (!await roleManager.RoleExistsAsync("Admin"))
+    {
+        await roleManager.CreateAsync(new IdentityRole("Admin"));
+    }
+}
+
+// Command-mode branch: one-time bootstrap for the first admin account.
+// Client accounts and their software are managed through the /admin UI once an admin exists.
 // Usage:
-//   dotnet run -- provision-client <email> <password> <companyName>
-//   dotnet run -- add-project <clientEmail> <name> <description> <status> [url]
-if (args.Length > 0 && args[0] is "provision-client" or "add-project")
+//   dotnet run -- create-admin <email> <password>
+if (args.Length > 0 && args[0] == "create-admin")
 {
     using var scope = app.Services.CreateScope();
     var services = scope.ServiceProvider;
 
-    if (args[0] == "provision-client")
+    if (args.Length < 3)
     {
-        if (args.Length < 4)
-        {
-            Console.WriteLine("Usage: dotnet run -- provision-client <email> <password> <companyName>");
-            return;
-        }
-
-        var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
-        var email = args[1];
-        var password = args[2];
-        var companyName = args[3];
-
-        var user = new ApplicationUser
-        {
-            UserName = email,
-            Email = email,
-            CompanyName = companyName,
-            EmailConfirmed = true
-        };
-
-        var result = await userManager.CreateAsync(user, password);
-        if (result.Succeeded)
-        {
-            Console.WriteLine($"Created client user '{email}' (id: {user.Id}) for company '{companyName}'.");
-        }
-        else
-        {
-            Console.WriteLine("Failed to create client user:");
-            foreach (var error in result.Errors)
-            {
-                Console.WriteLine($"  - {error.Code}: {error.Description}");
-            }
-        }
+        Console.WriteLine("Usage: dotnet run -- create-admin <email> <password>");
         return;
     }
 
-    if (args[0] == "add-project")
+    var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
+    var email = args[1];
+    var password = args[2];
+
+    var user = new ApplicationUser
     {
-        if (args.Length < 5)
-        {
-            Console.WriteLine("Usage: dotnet run -- add-project <clientEmail> <name> <description> <status> [url]");
-            Console.WriteLine("Status values: Planning, InProgress, Live, Maintenance, OnHold, Completed");
-            return;
-        }
+        UserName = email,
+        Email = email,
+        CompanyName = "Henderson Software Labs",
+        EmailConfirmed = true
+    };
 
-        var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
-        var db = services.GetRequiredService<ApplicationDbContext>();
-
-        var clientEmail = args[1];
-        var name = args[2];
-        var description = args[3];
-        var statusArg = args[4];
-        var url = args.Length > 5 ? args[5] : null;
-
-        var user = await userManager.FindByEmailAsync(clientEmail);
-        if (user is null)
-        {
-            Console.WriteLine($"No client user found with email '{clientEmail}'. Provision the client first.");
-            return;
-        }
-
-        if (!Enum.TryParse<ProjectStatus>(statusArg, ignoreCase: true, out var status))
-        {
-            Console.WriteLine($"Invalid status '{statusArg}'. Valid values: Planning, InProgress, Live, Maintenance, OnHold, Completed");
-            return;
-        }
-
-        var project = new SoftwareProject
-        {
-            Name = name,
-            Description = description,
-            Status = status,
-            Url = url,
-            ClientUserId = user.Id,
-            CreatedAt = DateTime.UtcNow
-        };
-
-        db.SoftwareProjects.Add(project);
-        await db.SaveChangesAsync();
-
-        Console.WriteLine($"Added project '{name}' (id: {project.Id}) for client '{clientEmail}'.");
-        return;
+    var result = await userManager.CreateAsync(user, password);
+    if (result.Succeeded)
+    {
+        await userManager.AddToRoleAsync(user, "Admin");
+        Console.WriteLine($"Created admin user '{email}' (id: {user.Id}).");
     }
+    else
+    {
+        Console.WriteLine("Failed to create admin user:");
+        foreach (var error in result.Errors)
+        {
+            Console.WriteLine($"  - {error.Code}: {error.Description}");
+        }
+    }
+    return;
 }
 
 if (app.Environment.IsDevelopment())
