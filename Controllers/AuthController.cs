@@ -13,11 +13,16 @@ namespace HendersonSoftwareLabsAPI.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly IJwtTokenService _jwtTokenService;
 
-    public AuthController(UserManager<ApplicationUser> userManager, IJwtTokenService jwtTokenService)
+    public AuthController(
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        IJwtTokenService jwtTokenService)
     {
         _userManager = userManager;
+        _signInManager = signInManager;
         _jwtTokenService = jwtTokenService;
     }
 
@@ -26,7 +31,20 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<LoginResponseDto>> Login(LoginRequestDto request)
     {
         var user = await _userManager.FindByEmailAsync(request.Email);
-        if (user is null || !await _userManager.CheckPasswordAsync(user, request.Password))
+        if (user is null)
+        {
+            return Unauthorized(new { message = "Invalid email or password." });
+        }
+
+        var result = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
+
+        if (result.IsLockedOut)
+        {
+            return StatusCode(StatusCodes.Status423Locked,
+                new { message = "Too many failed login attempts. Please try again in 15 minutes." });
+        }
+
+        if (!result.Succeeded)
         {
             return Unauthorized(new { message = "Invalid email or password." });
         }
