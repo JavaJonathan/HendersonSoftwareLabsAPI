@@ -11,7 +11,7 @@ namespace HendersonSoftwareLabsAPI.Controllers;
 
 [ApiController]
 [Route("api/admin")]
-[Authorize(Roles = "Admin")]
+[Authorize(Roles = Roles.Admin)]
 public class AdminController : ControllerBase
 {
     private readonly UserManager<ApplicationUser> _userManager;
@@ -43,6 +43,8 @@ public class AdminController : ControllerBase
             return BadRequest(new { message = string.Join("; ", result.Errors.Select(e => e.Description)) });
         }
 
+        await _userManager.AddToRoleAsync(user, Roles.Client);
+
         return Ok(new CreateClientResponseDto
         {
             Id = user.Id,
@@ -55,11 +57,31 @@ public class AdminController : ControllerBase
     [HttpGet("clients")]
     public async Task<ActionResult<List<AdminClientListItemDto>>> GetClients()
     {
-        var adminUserIds = await _userManager.GetUsersInRoleAsync("Admin");
-        var adminIdSet = adminUserIds.Select(u => u.Id).ToHashSet();
+        var clients = await ClientsQuery().ToListAsync();
+        return Ok(clients);
+    }
 
-        var clients = await _db.Users
-            .Where(u => !adminIdSet.Contains(u.Id))
+    [HttpGet("clients/{clientId}")]
+    public async Task<ActionResult<AdminClientListItemDto>> GetClient(string clientId)
+    {
+        var client = await ClientsQuery().FirstOrDefaultAsync(c => c.Id == clientId);
+        if (client is null)
+        {
+            return NotFound(new { message = "Client not found." });
+        }
+
+        return Ok(client);
+    }
+
+    private IQueryable<AdminClientListItemDto> ClientsQuery()
+    {
+        var clientIds = _db.UserRoles
+            .Join(_db.Roles, ur => ur.RoleId, r => r.Id, (ur, r) => new { ur.UserId, r.Name })
+            .Where(x => x.Name == Roles.Client)
+            .Select(x => x.UserId);
+
+        return _db.Users
+            .Where(u => clientIds.Contains(u.Id))
             .Select(u => new AdminClientListItemDto
             {
                 Id = u.Id,
@@ -67,10 +89,7 @@ public class AdminController : ControllerBase
                 CompanyName = u.CompanyName,
                 ContactName = u.ContactName,
                 ProjectCount = u.SoftwareProjects.Count
-            })
-            .ToListAsync();
-
-        return Ok(clients);
+            });
     }
 
     [HttpGet("clients/{clientId}/projects")]
@@ -85,16 +104,7 @@ public class AdminController : ControllerBase
         var projects = await _db.SoftwareProjects
             .Where(p => p.ClientUserId == clientId)
             .OrderByDescending(p => p.UpdatedAt ?? p.CreatedAt)
-            .Select(p => new ProjectDto
-            {
-                Id = p.Id,
-                Name = p.Name,
-                Description = p.Description,
-                Status = p.Status.ToString(),
-                Url = p.Url,
-                CreatedAt = p.CreatedAt,
-                UpdatedAt = p.UpdatedAt
-            })
+            .Select(ProjectDto.FromEntity)
             .ToListAsync();
 
         return Ok(projects);
@@ -103,8 +113,8 @@ public class AdminController : ControllerBase
     [HttpPost("clients/{clientId}/projects")]
     public async Task<ActionResult<ProjectDto>> CreateProject(string clientId, CreateProjectRequestDto request)
     {
-        var client = await _userManager.FindByIdAsync(clientId);
-        if (client is null)
+        var clientExists = await _db.Users.AnyAsync(u => u.Id == clientId);
+        if (!clientExists)
         {
             return NotFound(new { message = "Client not found." });
         }
@@ -120,22 +130,13 @@ public class AdminController : ControllerBase
             Description = request.Description,
             Status = status,
             Url = request.Url,
-            ClientUserId = client.Id,
+            ClientUserId = clientId,
             CreatedAt = DateTime.UtcNow
         };
 
         _db.SoftwareProjects.Add(project);
         await _db.SaveChangesAsync();
 
-        return Ok(new ProjectDto
-        {
-            Id = project.Id,
-            Name = project.Name,
-            Description = project.Description,
-            Status = project.Status.ToString(),
-            Url = project.Url,
-            CreatedAt = project.CreatedAt,
-            UpdatedAt = project.UpdatedAt
-        });
+        return Ok(ProjectDto.FromEntity.Compile()(project));
     }
 }

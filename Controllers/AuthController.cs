@@ -58,7 +58,7 @@ public class AuthController : ControllerBase
             ExpiresAtUtc = expiresAtUtc,
             Email = user.Email ?? string.Empty,
             CompanyName = user.CompanyName,
-            IsAdmin = roles.Contains("Admin")
+            IsAdmin = Roles.IsAdmin(roles)
         });
     }
 
@@ -85,7 +85,7 @@ public class AuthController : ControllerBase
             Email = user.Email ?? string.Empty,
             CompanyName = user.CompanyName,
             ContactName = user.ContactName,
-            IsAdmin = roles.Contains("Admin")
+            IsAdmin = Roles.IsAdmin(roles)
         });
     }
 }

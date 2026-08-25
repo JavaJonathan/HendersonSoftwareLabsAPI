@@ -31,16 +31,7 @@ public class PortalController : ControllerBase
         var projects = await _db.SoftwareProjects
             .Where(p => p.ClientUserId == userId)
             .OrderByDescending(p => p.UpdatedAt ?? p.CreatedAt)
-            .Select(p => new ProjectDto
-            {
-                Id = p.Id,
-                Name = p.Name,
-                Description = p.Description,
-                Status = p.Status.ToString(),
-                Url = p.Url,
-                CreatedAt = p.CreatedAt,
-                UpdatedAt = p.UpdatedAt
-            })
+            .Select(ProjectDto.FromEntity)
             .ToListAsync();
 
         return Ok(projects);

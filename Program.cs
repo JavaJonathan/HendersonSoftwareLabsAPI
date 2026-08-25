@@ -86,14 +86,33 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
-// Ensure the Admin role exists. Idempotent, runs on every startup (including CLI invocations)
-// so create-admin can rely on the role already being present.
+// Ensure the Admin/Client roles exist, and that every user has one. Idempotent, runs on
+// every startup (including CLI invocations) so create-admin can rely on roles already
+// being present, and so any user that somehow ends up with no role self-heals to Client
+// (the identity used to be inferred as "not an Admin" instead of an explicit role).
 using (var roleSeedScope = app.Services.CreateScope())
 {
-    var roleManager = roleSeedScope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
-    if (!await roleManager.RoleExistsAsync("Admin"))
+    var services = roleSeedScope.ServiceProvider;
+    var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+
+    foreach (var role in new[] { Roles.Admin, Roles.Client })
     {
-        await roleManager.CreateAsync(new IdentityRole("Admin"));
+        if (!await roleManager.RoleExistsAsync(role))
+        {
+            await roleManager.CreateAsync(new IdentityRole(role));
+        }
+    }
+
+    var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
+    var db = services.GetRequiredService<ApplicationDbContext>();
+    var users = await db.Users.ToListAsync();
+    foreach (var user in users)
+    {
+        var roles = await userManager.GetRolesAsync(user);
+        if (roles.Count == 0)
+        {
+            await userManager.AddToRoleAsync(user, Roles.Client);
+        }
     }
 }
 
@@ -127,7 +146,7 @@ if (args.Length > 0 && args[0] == "create-admin")
     var result = await userManager.CreateAsync(user, password);
     if (result.Succeeded)
     {
-        await userManager.AddToRoleAsync(user, "Admin");
+        await userManager.AddToRoleAsync(user, Roles.Admin);
         Console.WriteLine($"Created admin user '{email}' (id: {user.Id}).");
     }
     else
