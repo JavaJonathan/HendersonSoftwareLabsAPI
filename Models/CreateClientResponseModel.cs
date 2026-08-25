@@ -1,6 +1,6 @@
-namespace HendersonSoftwareLabsAPI.Dtos;
+namespace HendersonSoftwareLabsAPI.Models;
 
-public class CreateClientResponseDto
+public class CreateClientResponseModel
 {
     public string Id { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;

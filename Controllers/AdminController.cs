@@ -1,6 +1,6 @@
 using HendersonSoftwareLabsAPI.Data;
-using HendersonSoftwareLabsAPI.Dtos;
 using HendersonSoftwareLabsAPI.Entities;
+using HendersonSoftwareLabsAPI.Models;
 using HendersonSoftwareLabsAPI.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -24,7 +24,7 @@ public class AdminController : ControllerBase
     }
 
     [HttpPost("clients")]
-    public async Task<ActionResult<CreateClientResponseDto>> CreateClient(CreateClientRequestDto request)
+    public async Task<ActionResult<CreateClientResponseModel>> CreateClient(CreateClientRequestModel request)
     {
         var password = PasswordGenerator.Generate();
 
@@ -45,7 +45,7 @@ public class AdminController : ControllerBase
 
         await _userManager.AddToRoleAsync(user, Roles.Client);
 
-        return Ok(new CreateClientResponseDto
+        return Ok(new CreateClientResponseModel
         {
             Id = user.Id,
             Email = user.Email ?? string.Empty,
@@ -55,14 +55,14 @@ public class AdminController : ControllerBase
     }
 
     [HttpGet("clients")]
-    public async Task<ActionResult<List<AdminClientListItemDto>>> GetClients()
+    public async Task<ActionResult<List<AdminClientListItemModel>>> GetClients()
     {
         var clients = await ClientsQuery().ToListAsync();
         return Ok(clients);
     }
 
     [HttpGet("clients/{clientId}")]
-    public async Task<ActionResult<AdminClientListItemDto>> GetClient(string clientId)
+    public async Task<ActionResult<AdminClientListItemModel>> GetClient(string clientId)
     {
         var client = await ClientsQuery().FirstOrDefaultAsync(c => c.Id == clientId);
         if (client is null)
@@ -73,7 +73,7 @@ public class AdminController : ControllerBase
         return Ok(client);
     }
 
-    private IQueryable<AdminClientListItemDto> ClientsQuery()
+    private IQueryable<AdminClientListItemModel> ClientsQuery()
     {
         var clientIds = _db.UserRoles
             .Join(_db.Roles, ur => ur.RoleId, r => r.Id, (ur, r) => new { ur.UserId, r.Name })
@@ -82,7 +82,7 @@ public class AdminController : ControllerBase
 
         return _db.Users
             .Where(u => clientIds.Contains(u.Id))
-            .Select(u => new AdminClientListItemDto
+            .Select(u => new AdminClientListItemModel
             {
                 Id = u.Id,
                 Email = u.Email ?? string.Empty,
@@ -93,7 +93,7 @@ public class AdminController : ControllerBase
     }
 
     [HttpGet("clients/{clientId}/projects")]
-    public async Task<ActionResult<List<ProjectDto>>> GetClientProjects(string clientId)
+    public async Task<ActionResult<List<ProjectModel>>> GetClientProjects(string clientId)
     {
         var clientExists = await _db.Users.AnyAsync(u => u.Id == clientId);
         if (!clientExists)
@@ -104,14 +104,14 @@ public class AdminController : ControllerBase
         var projects = await _db.SoftwareProjects
             .Where(p => p.ClientUserId == clientId)
             .OrderByDescending(p => p.UpdatedAt ?? p.CreatedAt)
-            .Select(ProjectDto.FromEntity)
+            .Select(ProjectModel.FromEntity)
             .ToListAsync();
 
         return Ok(projects);
     }
 
     [HttpPost("clients/{clientId}/projects")]
-    public async Task<ActionResult<ProjectDto>> CreateProject(string clientId, CreateProjectRequestDto request)
+    public async Task<ActionResult<ProjectModel>> CreateProject(string clientId, CreateProjectRequestModel request)
     {
         var clientExists = await _db.Users.AnyAsync(u => u.Id == clientId);
         if (!clientExists)
@@ -137,6 +137,6 @@ public class AdminController : ControllerBase
         _db.SoftwareProjects.Add(project);
         await _db.SaveChangesAsync();
 
-        return Ok(ProjectDto.FromEntity.Compile()(project));
+        return Ok(ProjectModel.FromEntity.Compile()(project));
     }
 }

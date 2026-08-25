@@ -1,6 +1,6 @@
-namespace HendersonSoftwareLabsAPI.Dtos;
+namespace HendersonSoftwareLabsAPI.Models;
 
-public class AdminClientListItemDto
+public class AdminClientListItemModel
 {
     public string Id { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;

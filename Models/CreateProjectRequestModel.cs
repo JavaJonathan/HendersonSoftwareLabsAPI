@@ -1,6 +1,6 @@
-namespace HendersonSoftwareLabsAPI.Dtos;
+namespace HendersonSoftwareLabsAPI.Models;
 
-public class CreateProjectRequestDto
+public class CreateProjectRequestModel
 {
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;

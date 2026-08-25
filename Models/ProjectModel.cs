@@ -1,9 +1,9 @@
 using System.Linq.Expressions;
 using HendersonSoftwareLabsAPI.Entities;
 
-namespace HendersonSoftwareLabsAPI.Dtos;
+namespace HendersonSoftwareLabsAPI.Models;
 
-public class ProjectDto
+public class ProjectModel
 {
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
@@ -13,8 +13,8 @@ public class ProjectDto
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
 
-    /// <summary>EF-translatable projection, shared by every query that maps a SoftwareProject to a ProjectDto.</summary>
-    public static readonly Expression<Func<SoftwareProject, ProjectDto>> FromEntity = p => new ProjectDto
+    /// <summary>EF-translatable projection, shared by every query that maps a SoftwareProject to a ProjectModel.</summary>
+    public static readonly Expression<Func<SoftwareProject, ProjectModel>> FromEntity = p => new ProjectModel
     {
         Id = p.Id,
         Name = p.Name,

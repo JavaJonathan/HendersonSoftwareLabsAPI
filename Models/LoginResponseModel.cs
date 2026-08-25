@@ -1,6 +1,6 @@
-namespace HendersonSoftwareLabsAPI.Dtos;
+namespace HendersonSoftwareLabsAPI.Models;
 
-public class LoginResponseDto
+public class LoginResponseModel
 {
     public string Token { get; set; } = string.Empty;
     public DateTime ExpiresAtUtc { get; set; }

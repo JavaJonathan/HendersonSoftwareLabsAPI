@@ -1,6 +1,6 @@
 using System.Security.Claims;
 using HendersonSoftwareLabsAPI.Data;
-using HendersonSoftwareLabsAPI.Dtos;
+using HendersonSoftwareLabsAPI.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -20,7 +20,7 @@ public class PortalController : ControllerBase
     }
 
     [HttpGet("projects")]
-    public async Task<ActionResult<List<ProjectDto>>> GetMyProjects()
+    public async Task<ActionResult<List<ProjectModel>>> GetMyProjects()
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
@@ -31,7 +31,7 @@ public class PortalController : ControllerBase
         var projects = await _db.SoftwareProjects
             .Where(p => p.ClientUserId == userId)
             .OrderByDescending(p => p.UpdatedAt ?? p.CreatedAt)
-            .Select(ProjectDto.FromEntity)
+            .Select(ProjectModel.FromEntity)
             .ToListAsync();
 
         return Ok(projects);

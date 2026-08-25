@@ -1,6 +1,6 @@
 using System.Security.Claims;
-using HendersonSoftwareLabsAPI.Dtos;
 using HendersonSoftwareLabsAPI.Entities;
+using HendersonSoftwareLabsAPI.Models;
 using HendersonSoftwareLabsAPI.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -28,7 +28,7 @@ public class AuthController : ControllerBase
 
     [HttpPost("login")]
     [AllowAnonymous]
-    public async Task<ActionResult<LoginResponseDto>> Login(LoginRequestDto request)
+    public async Task<ActionResult<LoginResponseModel>> Login(LoginRequestModel request)
     {
         var user = await _userManager.FindByEmailAsync(request.Email);
         if (user is null)
@@ -52,7 +52,7 @@ public class AuthController : ControllerBase
         var roles = await _userManager.GetRolesAsync(user);
         var (token, expiresAtUtc) = _jwtTokenService.CreateToken(user, roles);
 
-        return Ok(new LoginResponseDto
+        return Ok(new LoginResponseModel
         {
             Token = token,
             ExpiresAtUtc = expiresAtUtc,
@@ -64,7 +64,7 @@ public class AuthController : ControllerBase
 
     [HttpGet("me")]
     [Authorize]
-    public async Task<ActionResult<MeResponseDto>> Me()
+    public async Task<ActionResult<MeResponseModel>> Me()
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
@@ -80,7 +80,7 @@ public class AuthController : ControllerBase
 
         var roles = await _userManager.GetRolesAsync(user);
 
-        return Ok(new MeResponseDto
+        return Ok(new MeResponseModel
         {
             Email = user.Email ?? string.Empty,
             CompanyName = user.CompanyName,
