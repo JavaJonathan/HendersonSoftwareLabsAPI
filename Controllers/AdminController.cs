@@ -73,6 +73,34 @@ public class AdminController : ControllerBase
         return Ok(client);
     }
 
+    [HttpPost("clients/{clientId}/reset-password")]
+    public async Task<ActionResult<ResetPasswordResponseModel>> ResetClientPassword(string clientId)
+    {
+        var user = await _userManager.FindByIdAsync(clientId);
+        if (user is null)
+        {
+            return NotFound(new { message = "Client not found." });
+        }
+
+        var removeResult = await _userManager.RemovePasswordAsync(user);
+        if (!removeResult.Succeeded)
+        {
+            return BadRequest(new { message = string.Join("; ", removeResult.Errors.Select(e => e.Description)) });
+        }
+
+        var newPassword = PasswordGenerator.Generate();
+        var addResult = await _userManager.AddPasswordAsync(user, newPassword);
+        if (!addResult.Succeeded)
+        {
+            return BadRequest(new { message = string.Join("; ", addResult.Errors.Select(e => e.Description)) });
+        }
+
+        await _userManager.SetLockoutEndDateAsync(user, null);
+        await _userManager.ResetAccessFailedCountAsync(user);
+
+        return Ok(new ResetPasswordResponseModel { GeneratedPassword = newPassword });
+    }
+
     private IQueryable<AdminClientListItemModel> ClientsQuery()
     {
         var clientIds = _db.UserRoles
