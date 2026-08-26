@@ -12,7 +12,7 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-const string DevCorsPolicy = "DevCorsPolicy";
+const string AppCorsPolicy = "AppCorsPolicy";
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
@@ -75,11 +75,15 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 
+// Falls back to the local Vite dev origin so `appsettings.Development.json` doesn't need to
+// duplicate it; production sets Cors:AllowedOrigin (env var Cors__AllowedOrigin) to the real
+// deployed frontend URL.
+var allowedOrigin = builder.Configuration["Cors:AllowedOrigin"] ?? "http://localhost:5173";
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy(DevCorsPolicy, policy =>
+    options.AddPolicy(AppCorsPolicy, policy =>
     {
-        policy.WithOrigins("http://localhost:5173")
+        policy.WithOrigins(allowedOrigin)
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
@@ -208,7 +212,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.UseCors(DevCorsPolicy);
+app.UseCors(AppCorsPolicy);
 
 app.UseAuthentication();
 app.UseAuthorization();

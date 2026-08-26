@@ -1,0 +1,3 @@
+100-57-201-123.sslip.io {
+	reverse_proxy localhost:8080
+}
