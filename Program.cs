@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text;
 using HendersonSoftwareLabsAPI.Data;
 using HendersonSoftwareLabsAPI.Entities;
@@ -47,6 +48,27 @@ builder.Services.AddAuthentication(options =>
             IssuerSigningKey = string.IsNullOrEmpty(key)
                 ? null
                 : new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key))
+        };
+
+        // Bearer JWTs are stateless, so without this a password reset, lockout, or role change
+        // has no effect on a token already issued until it naturally expires. Comparing against
+        // the user's current SecurityStamp (rotated by Identity on password change) makes those
+        // actions revoke access immediately instead of waiting out the token's lifetime.
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                var tokenStamp = context.Principal?.FindFirstValue(JwtTokenService.SecurityStampClaimType);
+
+                var userManager = context.HttpContext.RequestServices.GetRequiredService<UserManager<ApplicationUser>>();
+                var user = userId is null ? null : await userManager.FindByIdAsync(userId);
+
+                if (user is null || user.SecurityStamp != tokenStamp)
+                {
+                    context.Fail("Token is no longer valid.");
+                }
+            }
         };
     });
 

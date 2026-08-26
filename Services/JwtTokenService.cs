@@ -8,6 +8,8 @@ namespace HendersonSoftwareLabsAPI.Services;
 
 public class JwtTokenService : IJwtTokenService
 {
+    public const string SecurityStampClaimType = "security_stamp";
+
     private readonly IConfiguration _configuration;
 
     public JwtTokenService(IConfiguration configuration)
@@ -22,14 +24,15 @@ public class JwtTokenService : IJwtTokenService
         var issuer = jwtSection["Issuer"] ?? throw new InvalidOperationException("Jwt:Issuer is not configured.");
         var audience = jwtSection["Audience"] ?? throw new InvalidOperationException("Jwt:Audience is not configured.");
 
-        var expiresAtUtc = DateTime.UtcNow.AddHours(8);
+        var expiresAtUtc = DateTime.UtcNow.AddHours(2);
 
         var claims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, user.Id),
             new(ClaimTypes.NameIdentifier, user.Id),
             new(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new(SecurityStampClaimType, user.SecurityStamp ?? string.Empty)
         };
 
         claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));

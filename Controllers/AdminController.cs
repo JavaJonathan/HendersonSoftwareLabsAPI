@@ -97,6 +97,7 @@ public class AdminController : ControllerBase
 
         await _userManager.SetLockoutEndDateAsync(user, null);
         await _userManager.ResetAccessFailedCountAsync(user);
+        await _userManager.UpdateSecurityStampAsync(user);
 
         return Ok(new ResetPasswordResponseModel { GeneratedPassword = newPassword });
     }
