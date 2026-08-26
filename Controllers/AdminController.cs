@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using HendersonSoftwareLabsAPI.Data;
 using HendersonSoftwareLabsAPI.Entities;
 using HendersonSoftwareLabsAPI.Models;
@@ -16,12 +17,16 @@ public class AdminController : ControllerBase
 {
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly ApplicationDbContext _db;
+    private readonly ILogger<AdminController> _logger;
 
-    public AdminController(UserManager<ApplicationUser> userManager, ApplicationDbContext db)
+    public AdminController(UserManager<ApplicationUser> userManager, ApplicationDbContext db, ILogger<AdminController> logger)
     {
         _userManager = userManager;
         _db = db;
+        _logger = logger;
     }
+
+    private string CurrentAdminId => User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "unknown";
 
     [HttpPost("clients")]
     public async Task<ActionResult<CreateClientResponseModel>> CreateClient(CreateClientRequestModel request)
@@ -44,6 +49,8 @@ public class AdminController : ControllerBase
         }
 
         await _userManager.AddToRoleAsync(user, Roles.Client);
+
+        _logger.LogInformation("Client {ClientId} ({Email}) created by admin {AdminId}.", user.Id, user.Email, CurrentAdminId);
 
         return Ok(new CreateClientResponseModel
         {
@@ -98,6 +105,8 @@ public class AdminController : ControllerBase
         await _userManager.SetLockoutEndDateAsync(user, null);
         await _userManager.ResetAccessFailedCountAsync(user);
         await _userManager.UpdateSecurityStampAsync(user);
+
+        _logger.LogInformation("Password reset for client {ClientId} by admin {AdminId}.", clientId, CurrentAdminId);
 
         return Ok(new ResetPasswordResponseModel { GeneratedPassword = newPassword });
     }

@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text;
 using HendersonSoftwareLabsAPI.Data;
+using Microsoft.AspNetCore.Diagnostics;
 using HendersonSoftwareLabsAPI.Entities;
 using HendersonSoftwareLabsAPI.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -181,6 +182,23 @@ if (args.Length > 0 && args[0] == "create-admin")
     }
     return;
 }
+
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+        if (exception is not null)
+        {
+            var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalExceptionHandler");
+            logger.LogError(exception, "Unhandled exception on {Method} {Path}", context.Request.Method, context.Request.Path);
+        }
+
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new { message = "An unexpected error occurred." });
+    });
+});
 
 if (app.Environment.IsDevelopment())
 {
