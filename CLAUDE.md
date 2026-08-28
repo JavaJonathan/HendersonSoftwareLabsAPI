@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Status (as of 2026-08-28)
+
+Active development is paused here. The API is deployed and live in production (see "Production Deployment") with no known bugs or unfinished work — the last work on this repo was the security/logging/deployment passes documented below; the most recent session-level work after that was frontend-only (see `HendersonSoftwareLabsUI`'s `CLAUDE.md`, which is kept current as of the same pause point). Read both files before resuming.
+
 ## Commands
 
 ```bash
