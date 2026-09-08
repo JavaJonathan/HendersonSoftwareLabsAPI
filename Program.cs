@@ -75,15 +75,26 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 
-// Falls back to the local Vite dev origin so `appsettings.Development.json` doesn't need to
-// duplicate it; production sets Cors:AllowedOrigin (env var Cors__AllowedOrigin) to the real
-// deployed frontend URL.
-var allowedOrigin = builder.Configuration["Cors:AllowedOrigin"] ?? "http://localhost:5173";
+// Cors:AllowedOrigin (env var Cors__AllowedOrigin) is the deployed SPA origin(s) the API
+// allows — a comma- or semicolon-separated list, since the site is reachable at both the apex
+// and the www host. Falls back to the local Vite dev origin so appsettings.Development.json
+// doesn't need to duplicate it. Outside Development a missing value would silently lock the
+// deployed UI out of the API with no obvious cause, so fail fast instead.
+var configuredOrigins = builder.Configuration["Cors:AllowedOrigin"];
+if (string.IsNullOrWhiteSpace(configuredOrigins) && !builder.Environment.IsDevelopment())
+{
+    throw new InvalidOperationException(
+        "Cors:AllowedOrigin must be set outside Development (env Cors__AllowedOrigin) — " +
+        "the deployed SPA origin(s) the API allows, comma-separated.");
+}
+var allowedOrigins = string.IsNullOrWhiteSpace(configuredOrigins)
+    ? new[] { "http://localhost:5173" }
+    : configuredOrigins.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(AppCorsPolicy, policy =>
     {
-        policy.WithOrigins(allowedOrigin)
+        policy.WithOrigins(allowedOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
