@@ -24,7 +24,8 @@ public class JwtTokenService : IJwtTokenService
         var issuer = jwtSection["Issuer"] ?? throw new InvalidOperationException("Jwt:Issuer is not configured.");
         var audience = jwtSection["Audience"] ?? throw new InvalidOperationException("Jwt:Audience is not configured.");
 
-        var expiresAtUtc = DateTime.UtcNow.AddHours(2);
+        var accessTokenHours = jwtSection.GetValue<double?>("AccessTokenHours") ?? 2;
+        var expiresAtUtc = DateTime.UtcNow.AddHours(accessTokenHours);
 
         var claims = new List<Claim>
         {

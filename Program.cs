@@ -1,11 +1,18 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.RateLimiting;
 using HendersonSoftwareLabsAPI.Data;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics;
 using HendersonSoftwareLabsAPI.Entities;
 using HendersonSoftwareLabsAPI.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -29,7 +36,59 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddDefaultTokenProviders();
 
+// --- Reverse-proxy awareness ----------------------------------------------------------------
+// In production Caddy terminates TLS and forwards to this app over plain HTTP. Without honoring
+// X-Forwarded-For every request appears to come from the proxy, so any per-IP logic (the rate
+// limiter below) collapses into one bucket and every auth log line records Caddy's address
+// instead of the client's. Trust the forwarded headers only from the proxy network(s) below,
+// never unconditionally.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    // One proxy hop (Caddy). Bump via ForwardedHeaders__ForwardLimit if another proxy (an ALB,
+    // Cloudflare) is ever put in front — and add its egress range to KnownNetworks too.
+    options.ForwardLimit = builder.Configuration.GetValue<int?>("ForwardedHeaders:ForwardLimit") ?? 1;
+    options.KnownProxies.Clear();
+    options.KnownNetworks.Clear();
+
+    // Override in prod via ForwardedHeaders__KnownNetworks (comma/semicolon-separated CIDRs) with
+    // the tightest range that covers the proxy. Default: loopback + the default Docker bridge
+    // range, which is what Kestrel sees when Caddy proxies to a published container port.
+    var configured = builder.Configuration["ForwardedHeaders:KnownNetworks"];
+    var cidrs = string.IsNullOrWhiteSpace(configured)
+        ? new[] { "127.0.0.0/8", "::1/128", "172.16.0.0/12" }
+        : configured.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    foreach (var cidr in cidrs)
+    {
+        var slash = cidr.IndexOf('/');
+        if (slash > 0
+            && IPAddress.TryParse(cidr[..slash], out var prefix)
+            && int.TryParse(cidr[(slash + 1)..], out var length)
+            && length >= 0
+            && length <= (prefix.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32))
+        {
+            options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(prefix, length));
+        }
+        else
+        {
+            Console.Error.WriteLine($"[startup] Ignoring malformed ForwardedHeaders:KnownNetworks entry '{cidr}'.");
+        }
+    }
+});
+
+// The JWT signing key is the whole strength of HS256 auth — a missing or weak value lets anyone
+// forge a token, an admin one included. Fail fast rather than boot without one.
+// Wave 2: also enforce a >= 32-byte minimum, once the prod Jwt__Key value is confirmed / rotated.
 var jwtSection = builder.Configuration.GetSection("Jwt");
+var jwtKey = jwtSection["Key"];
+if (string.IsNullOrEmpty(jwtKey))
+{
+    throw new InvalidOperationException(
+        "Jwt:Key is not configured. Supply a random 32+ byte value via the Jwt__Key environment " +
+        "variable (generate one with `openssl rand -base64 48`).");
+}
+
 builder.Services.AddAuthentication(options =>
     {
         options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -37,7 +96,6 @@ builder.Services.AddAuthentication(options =>
     })
     .AddJwtBearer(options =>
     {
-        var key = jwtSection["Key"];
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -46,9 +104,7 @@ builder.Services.AddAuthentication(options =>
             ValidateIssuerSigningKey = true,
             ValidIssuer = jwtSection["Issuer"],
             ValidAudience = jwtSection["Audience"],
-            IssuerSigningKey = string.IsNullOrEmpty(key)
-                ? null
-                : new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
 
         // Bearer JWTs are stateless, so without this a password reset, lockout, or role change
@@ -75,11 +131,67 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 
+builder.Services.AddAuthorization(options =>
+{
+    // Fail closed: a controller/endpoint that carries no [Authorize]/[AllowAnonymous] now
+    // requires an authenticated user rather than being reachable anonymously. The explicit
+    // [AllowAnonymous] on AuthController.Login still wins.
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
+
+// Request throttling. UseForwardedHeaders runs first in the pipeline, so every partition here
+// keys off the real client IP, not Caddy's.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Blanket per-IP backstop for every endpoint. Generous enough that an office behind one NAT
+    // address doing normal portal/admin work never trips it; low enough to stop a scripted flood.
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 300,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    // Login: a per-IP request cap on top of Identity's per-account lockout (which owns the 423
+    // semantics). Stops rapid scripted guessing across many accounts before it reaches the
+    // handler; loose enough for a morning login rush from one office IP.
+    options.AddPolicy("auth", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 20,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    options.OnRejected = async (context, ct) =>
+    {
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((int)retryAfter.TotalSeconds).ToString(CultureInfo.InvariantCulture);
+        }
+
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.HttpContext.Response.WriteAsJsonAsync(
+            new { message = "Too many requests. Slow down and try again shortly." }, ct);
+    };
+});
+
 // Cors:AllowedOrigin (env var Cors__AllowedOrigin) is the deployed SPA origin(s) the API
 // allows — a comma- or semicolon-separated list, since the site is reachable at both the apex
 // and the www host. Falls back to the local Vite dev origin so appsettings.Development.json
 // doesn't need to duplicate it. Outside Development a missing value would silently lock the
-// deployed UI out of the API with no obvious cause, so fail fast instead.
+// deployed UI out of the API with no obvious cause, so fail fast instead — same pattern as the
+// Jwt:Key check above.
 var configuredOrigins = builder.Configuration["Cors:AllowedOrigin"];
 if (string.IsNullOrWhiteSpace(configuredOrigins) && !builder.Environment.IsDevelopment())
 {
@@ -197,6 +309,25 @@ if (args.Length > 0 && args[0] == "create-admin")
     }
     return;
 }
+
+// --- HTTP pipeline ------------------------------------------------------------------------
+// Must run before anything that reads the client address or scheme (rate limiter, auth, the
+// exception handler's logging): rewrites them from Caddy's forwarded headers.
+app.UseForwardedHeaders();
+
+// Baseline security headers on every response. No HSTS / HTTPS redirect here — Caddy terminates
+// TLS in front and the container only speaks HTTP; Caddy owns HSTS. The API serves JSON only,
+// so no CSP: nosniff + frame-deny + no-referrer are the relevant ones.
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "DENY";
+    headers["Referrer-Policy"] = "no-referrer";
+    await next();
+});
+
+app.UseRateLimiter();
 
 app.UseExceptionHandler(errorApp =>
 {

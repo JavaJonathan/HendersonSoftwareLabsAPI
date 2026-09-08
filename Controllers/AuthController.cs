@@ -5,6 +5,7 @@ using HendersonSoftwareLabsAPI.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace HendersonSoftwareLabsAPI.Controllers;
 
@@ -31,6 +32,7 @@ public class AuthController : ControllerBase
 
     [HttpPost("login")]
     [AllowAnonymous]
+    [EnableRateLimiting("auth")]
     public async Task<ActionResult<LoginResponseModel>> Login(LoginRequestModel request)
     {
         var user = await _userManager.FindByEmailAsync(request.Email);
