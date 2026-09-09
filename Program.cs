@@ -46,7 +46,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     // One proxy hop (Caddy). Bump via ForwardedHeaders__ForwardLimit if another proxy (an ALB,
-    // Cloudflare) is ever put in front — and add its egress range to KnownNetworks too.
+    // Cloudflare) is ever put in front - and add its egress range to KnownNetworks too.
     options.ForwardLimit = builder.Configuration.GetValue<int?>("ForwardedHeaders:ForwardLimit") ?? 1;
     options.KnownProxies.Clear();
     options.KnownNetworks.Clear();
@@ -77,7 +77,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     }
 });
 
-// The JWT signing key is the whole strength of HS256 auth — a missing or weak value lets anyone
+// The JWT signing key is the whole strength of HS256 auth - a missing or weak value lets anyone
 // forge a token, an admin one included. Fail fast rather than boot without one.
 // Wave 2: also enforce a >= 32-byte minimum, once the prod Jwt__Key value is confirmed / rotated.
 var jwtSection = builder.Configuration.GetSection("Jwt");
@@ -187,16 +187,16 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // Cors:AllowedOrigin (env var Cors__AllowedOrigin) is the deployed SPA origin(s) the API
-// allows — a comma- or semicolon-separated list, since the site is reachable at both the apex
+// allows - a comma- or semicolon-separated list, since the site is reachable at both the apex
 // and the www host. Falls back to the local Vite dev origin so appsettings.Development.json
 // doesn't need to duplicate it. Outside Development a missing value would silently lock the
-// deployed UI out of the API with no obvious cause, so fail fast instead — same pattern as the
+// deployed UI out of the API with no obvious cause, so fail fast instead - same pattern as the
 // Jwt:Key check above.
 var configuredOrigins = builder.Configuration["Cors:AllowedOrigin"];
 if (string.IsNullOrWhiteSpace(configuredOrigins) && !builder.Environment.IsDevelopment())
 {
     throw new InvalidOperationException(
-        "Cors:AllowedOrigin must be set outside Development (env Cors__AllowedOrigin) — " +
+        "Cors:AllowedOrigin must be set outside Development (env Cors__AllowedOrigin) - " +
         "the deployed SPA origin(s) the API allows, comma-separated.");
 }
 var allowedOrigins = string.IsNullOrWhiteSpace(configuredOrigins)
@@ -315,7 +315,7 @@ if (args.Length > 0 && args[0] == "create-admin")
 // exception handler's logging): rewrites them from Caddy's forwarded headers.
 app.UseForwardedHeaders();
 
-// Baseline security headers on every response. No HSTS / HTTPS redirect here — Caddy terminates
+// Baseline security headers on every response. No HSTS / HTTPS redirect here - Caddy terminates
 // TLS in front and the container only speaks HTTP; Caddy owns HSTS. The API serves JSON only,
 // so no CSP: nosniff + frame-deny + no-referrer are the relevant ones.
 app.Use(async (context, next) =>
