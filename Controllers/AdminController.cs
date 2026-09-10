@@ -177,4 +177,34 @@ public class AdminController : ControllerBase
 
         return Ok(ProjectModel.FromEntity.Compile()(project));
     }
+
+    /// <summary>
+    /// Resets the homepage Line back to its launch state: every hand-cleared total and helper
+    /// count to zero, and every kind locked again except the one that ships automated.
+    ///
+    /// The Line's write endpoint is anonymous, and while it is bounded three ways, a determined
+    /// caller could still buy an early unlock. That is cosmetic rather than dangerous, but without
+    /// this it would be an RDS session to undo, and RDS is not publicly reachable. Six rows and one
+    /// call instead.
+    /// </summary>
+    [HttpPost("line/reset")]
+    public async Task<IActionResult> ResetLine()
+    {
+        var rows = await _db.LineKindProgress.ToListAsync();
+
+        foreach (var row in rows)
+        {
+            row.HandCleared = 0;
+            row.Helpers = 0;
+            row.UnlockedAt = row.Kind == LineKind.Intake ? LineLaunchedAt : null;
+        }
+
+        await _db.SaveChangesAsync();
+        _logger.LogWarning("Line progress reset by admin {AdminId}", CurrentAdminId);
+
+        return Ok(new { message = $"Reset {rows.Count} kinds to the launch state." });
+    }
+
+    /// <summary>Mirrors the seed in ApplicationDbContext so a reset restores the same starting point.</summary>
+    private static readonly DateTime LineLaunchedAt = new(2026, 9, 10, 0, 0, 0, DateTimeKind.Utc);
 }

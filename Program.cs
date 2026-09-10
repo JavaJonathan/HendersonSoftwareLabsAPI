@@ -130,6 +130,7 @@ builder.Services.AddAuthentication(options =>
     });
 
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+builder.Services.AddSingleton<ILineTicketService, LineTicketService>();
 
 builder.Services.AddAuthorization(options =>
 {
@@ -172,6 +173,21 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 
+    // The homepage Line's clear-flush endpoint, the only anonymous write surface here. A visitor
+    // batches their clicks and flushes a handful of times in a normal session, more in a long one,
+    // and a shared office address multiplies that. Generous on purpose: a rejected flush costs the
+    // visitor nothing (their own backlog already cleared in the browser), and the real abuse
+    // ceiling is the per-request clamp and the per-IP daily budget in LineController, not this.
+    options.AddPolicy("line-clears", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 60,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0
+            }));
+
     options.OnRejected = async (context, ct) =>
     {
         if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
@@ -211,6 +227,11 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod();
     });
 });
+
+// Backs the homepage Line's GET response cache. That endpoint is anonymous, is hit by every
+// visitor to the marketing site, and its answer changes only when someone adds a station, so a
+// short in-process cache keeps a traffic spike off RDS entirely.
+builder.Services.AddMemoryCache();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
