@@ -51,6 +51,7 @@ jobs:
               \"docker pull $REGISTRY/$ECR_REPOSITORY:latest\",
               \"docker stop hsl-api || true\",
               \"docker rm hsl-api || true\",
-              \"docker run -d --name hsl-api --restart unless-stopped -p 8080:8080 --env-file /etc/hsl-api.env $REGISTRY/$ECR_REPOSITORY:latest\"
+              \"docker run -d --name hsl-api --restart unless-stopped -p 8080:8080 --memory=512m --memory-swap=512m --log-opt max-size=10m --log-opt max-file=3 --env-file /etc/hsl-api.env $REGISTRY/$ECR_REPOSITORY:latest\",
+              \"docker image prune -f\"
             ]" \
             --region "$AWS_REGION"
