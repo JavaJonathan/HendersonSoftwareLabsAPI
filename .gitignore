@@ -6,6 +6,9 @@
 # dotenv files
 .env
 
+# EF Core migrations bundle (build artifact, regenerated via `dotnet ef migrations bundle` for deploys)
+efbundle
+
 # User-specific files
 *.rsuser
 *.suo

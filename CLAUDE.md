@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Do not use em dashes (`—`) anywhere: not in code, comments, docs, commit messages, or user-facing copy. Rewrite with a comma, parentheses, a colon, or two sentences; a spaced hyphen (` - `) is an acceptable last resort. This applies to en dashes (`–`) in prose too; a plain hyphen is fine for ranges.
 
-## Project Status (as of 2026-08-28)
+## Project Status (as of 2026-09-12)
 
-Active development is paused here. The API is deployed and live in production (see "Production Deployment") with no known bugs or unfinished work - the last work on this repo was the security/logging/deployment passes documented below; the most recent session-level work after that was frontend-only (see `HendersonSoftwareLabsUI`'s `CLAUDE.md`, which is kept current as of the same pause point). Read both files before resuming.
+Everything below is deployed and live in production (see "Production Deployment") with no known bugs or unfinished work. The most recent work added the shared "Line" homepage game: `LineController` (see its own doc comment for the anonymous-write design rationale), the `LineKindProgress` entity/migration, and the admin reset endpoint on `AdminController` - see "Three controllers, three trust levels" below for where it fits. Before that, a CORS multi-origin update and a hardening pass (rate limiting, proxy awareness, fail-fast config). This file and the UI repo's `CLAUDE.md` are both kept current - read both before resuming.
 
 ## Commands
 
@@ -48,10 +48,11 @@ dotnet run -- create-admin <email> <password>
 
 **Data model**: one `ApplicationUser` (`Entities/ApplicationUser.cs`, extends `IdentityUser` with `CompanyName`/`ContactName`) has many `SoftwareProject` (`Entities/SoftwareProject.cs`) via `ClientUserId`. `PortalController.GetMyProjects` filters strictly by the caller's own `NameIdentifier` claim - a client can only ever see their own projects, never another client's, and there is no endpoint that lets a client query anyone else's data. `AdminController` is the only place that can query/create across all clients, and it's gated by the `Admin` role.
 
-**Three controllers, three trust levels**:
+**Four controllers, four trust levels**:
 - `AuthController` - `[AllowAnonymous]` login, `[Authorize]` `/me` (any authenticated user)
 - `PortalController` - `[Authorize]`, scoped to the caller's own data only
 - `AdminController` - `[Authorize(Roles = "Admin")]` on the whole controller
+- `LineController` - `[AllowAnonymous]` at class level, the only anonymous *write* surface in the API (backs the homepage's shared "Line" game); see its own doc comment for why that's deliberate and how writes are bounded
 
 **CORS** is locked to the Vite dev origin (`http://localhost:5173`) via a named policy - update `Program.cs` if the frontend's dev port ever changes (it's pinned with `strictPort` on the UI side for exactly this reason).
 

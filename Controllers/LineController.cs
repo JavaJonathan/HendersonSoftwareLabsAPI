@@ -42,12 +42,14 @@ public class LineController : ControllerBase
     private readonly ApplicationDbContext _db;
     private readonly IMemoryCache _cache;
     private readonly ILineTicketService _tickets;
+    private readonly ILogger<LineController> _logger;
 
-    public LineController(ApplicationDbContext db, IMemoryCache cache, ILineTicketService tickets)
+    public LineController(ApplicationDbContext db, IMemoryCache cache, ILineTicketService tickets, ILogger<LineController> logger)
     {
         _db = db;
         _cache = cache;
         _tickets = tickets;
+        _logger = logger;
     }
 
     /// <summary>
@@ -105,6 +107,13 @@ public class LineController : ControllerBase
         var allowance = Math.Min(
             LineGameRules.MaxTotalPerRequest,
             Math.Max(0, LineGameRules.DailyIpBudget - budgetUsed));
+
+        if (allowance <= 0 && requested.Count > 0)
+        {
+            _logger.LogInformation(
+                "Line clears rejected for {Ip}: daily budget exhausted ({BudgetUsed}/{DailyBudget}).",
+                ip, budgetUsed, LineGameRules.DailyIpBudget);
+        }
 
         var accepted = new Dictionary<LineKind, int>();
         foreach (var (kind, count) in requested)
@@ -178,7 +187,13 @@ public class LineController : ControllerBase
                 .ThenBy(r => r.Kind)
                 .FirstOrDefault();
 
-            if (winner is not null) winner.UnlockedAt = now;
+            if (winner is not null)
+            {
+                winner.UnlockedAt = now;
+                _logger.LogInformation(
+                    "Line kind {Kind} unlocked automation at {HandCleared} hand-cleared tasks.",
+                    winner.Kind, winner.HandCleared);
+            }
         }
 
         await _db.SaveChangesAsync();
@@ -237,7 +252,7 @@ public class LineController : ControllerBase
         foreach (var (name, count) in clears)
         {
             if (count <= 0) continue;
-            if (TryParseKind(name, out var kind)) parsed[kind] = count;
+            if (TryParseKind(name, out var kind)) parsed[kind] = parsed.GetValueOrDefault(kind) + count;
         }
 
         return parsed;
