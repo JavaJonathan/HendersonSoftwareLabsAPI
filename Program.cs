@@ -231,7 +231,18 @@ builder.Services.AddCors(options =>
 // Backs the homepage Line's GET response cache. That endpoint is anonymous, is hit by every
 // visitor to the marketing site, and its answer changes only when someone adds a station, so a
 // short in-process cache keeps a traffic spike off RDS entirely.
-builder.Services.AddMemoryCache();
+//
+// SizeLimit is the guardrail, not a performance tweak. LineController also keeps a per-IP daily
+// clear budget in here, keyed on the raw client address with a 24 hour TTL, so the key space is
+// chosen by anonymous traffic: without a cap, a crawl spread across many source addresses grows
+// this cache unbounded on a 1 GB box that also hosts a second app. Every entry declares Size = 1,
+// so this is a ceiling on entry COUNT and the cache evicts the coldest entries once it is hit
+// rather than consuming the instance. Losing an evicted budget entry costs nothing: the visitor
+// simply gets a fresh daily allowance, which the per-request clamp still bounds.
+builder.Services.AddMemoryCache(options =>
+{
+    options.SizeLimit = 20_000;
+});
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

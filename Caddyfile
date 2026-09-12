@@ -1,3 +1,14 @@
-100-57-201-123.sslip.io {
+# Production reverse proxy for this API, running on the EC2 instance in front of the hsl-api
+# container (which listens on 8080 and is not exposed publicly).
+#
+# Caddy terminates TLS and renews the certificate automatically. The hostname must match the real
+# public name: Let's Encrypt will not issue for *.amazonaws.com or an sslip.io host built from the
+# Elastic IP, so getting this wrong brings the API up with no valid certificate. This file used to
+# say 100-57-201-123.sslip.io, which is what the box served before the custom-domain cutover.
+#
+# NOTE: the instance is shared. The live /etc/caddy/Caddyfile also contains a second site block
+# for digitalbox-api.hendersonsoftwarelabs.com on port 8081, which lives in the DigitalBox repo.
+# This file is the Henderson block only - append to the live config, do not overwrite it.
+api.hendersonsoftwarelabs.com {
 	reverse_proxy localhost:8080
 }

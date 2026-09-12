@@ -37,6 +37,15 @@ public class LineController : ControllerBase
     private static readonly TimeSpan SummaryCacheFor = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan BudgetWindow = TimeSpan.FromHours(24);
 
+    // The shared IMemoryCache is size-limited (see Program.cs), so every entry written here has to
+    // declare a size or the write throws. Both kinds of entry are tiny and count as one unit: the
+    // limit exists to bound how MANY per-IP budget entries can accumulate, not how large they are.
+    private static readonly MemoryCacheEntryOptions SummaryEntry =
+        new() { AbsoluteExpirationRelativeToNow = SummaryCacheFor, Size = 1 };
+
+    private static readonly MemoryCacheEntryOptions BudgetEntry =
+        new() { AbsoluteExpirationRelativeToNow = BudgetWindow, Size = 1 };
+
     private static readonly JsonSerializerOptions BodyJson = new() { PropertyNameCaseInsensitive = true };
 
     private readonly ApplicationDbContext _db;
@@ -128,7 +137,7 @@ public class LineController : ControllerBase
         var acceptedTotal = accepted.Values.Sum();
         if (acceptedTotal > 0)
         {
-            _cache.Set(budgetKey, budgetUsed + acceptedTotal, BudgetWindow);
+            _cache.Set(budgetKey, budgetUsed + acceptedTotal, BudgetEntry);
         }
 
         var summary = acceptedTotal > 0
@@ -202,7 +211,7 @@ public class LineController : ControllerBase
         // Set the cache rather than only evicting it, so a write warms the next read instead of
         // making the next visitor pay for a query.
         var summary = BuildSummary(rows, DateTime.UtcNow);
-        _cache.Set(SummaryCacheKey, summary, SummaryCacheFor);
+        _cache.Set(SummaryCacheKey, summary, SummaryEntry);
         return summary;
     }
 
@@ -215,7 +224,7 @@ public class LineController : ControllerBase
 
         var rows = await _db.LineKindProgress.AsNoTracking().ToListAsync();
         var summary = BuildSummary(rows, DateTime.UtcNow);
-        _cache.Set(SummaryCacheKey, summary, SummaryCacheFor);
+        _cache.Set(SummaryCacheKey, summary, SummaryEntry);
         return summary;
     }
 
