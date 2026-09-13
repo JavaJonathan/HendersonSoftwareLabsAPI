@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace HendersonSoftwareLabsAPI.Models;
 
-public class CreateProjectRequestModel
+public class ProjectRequestModel
 {
     [Required]
     [StringLength(200, MinimumLength = 1)]
