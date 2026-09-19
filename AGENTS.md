@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. `AGENTS.md` in this repo mirrors this file for other AI tools - update both together.
+This file provides guidance to AI coding agents when working with code in this repository. `CLAUDE.md` in this repo mirrors this file for Claude Code - update both together.
 
 ## Writing style
 
@@ -8,7 +8,7 @@ Do not use em dashes (`—`) anywhere: not in code, comments, docs, commit messa
 
 ## Project Status (as of 2026-09-12)
 
-Everything below is deployed and live in production (see "Production Deployment") with no known bugs or unfinished work. The most recent work added the shared "Line" homepage game: `LineController` (see its own doc comment for the anonymous-write design rationale), the `LineKindProgress` entity/migration, and the admin reset endpoint on `AdminController` - see "Three controllers, three trust levels" below for where it fits. Before that, a CORS multi-origin update and a hardening pass (rate limiting, proxy awareness, fail-fast config). This file and the UI repo's `CLAUDE.md` are both kept current - read both before resuming.
+Everything below is deployed and live in production (see "Production Deployment") with no known bugs or unfinished work. The most recent work added the shared "Line" homepage game: `LineController` (see its own doc comment for the anonymous-write design rationale), the `LineKindProgress` entity/migration, and the admin reset endpoint on `AdminController` - see "Three controllers, three trust levels" below for where it fits. Before that, a CORS multi-origin update and a hardening pass (rate limiting, proxy awareness, fail-fast config). This file and the UI repo's `AGENTS.md` are both kept current - read both before resuming.
 
 ## Commands
 
@@ -58,7 +58,7 @@ dotnet run -- create-admin <email> <password>
 
 ## Production Deployment
 
-**Live**: API at `https://api.hendersonsoftwarelabs.com`. Frontend is a separate repo (`HendersonSoftwareLabsUI`) deployed on AWS Amplify at `https://hendersonsoftwarelabs.com` - see that repo's `CLAUDE.md` for its side.
+**Live**: API at `https://api.hendersonsoftwarelabs.com`. Frontend is a separate repo (`HendersonSoftwareLabsUI`) deployed on AWS Amplify at `https://hendersonsoftwarelabs.com` - see that repo's `AGENTS.md` for its side.
 
 **Infrastructure** (AWS account `441627938519`, region `us-east-1`):
 - **Compute**: one EC2 instance (`i-076d8b6b1463968a1`, `t3.micro`) running the API in Docker, with **Caddy** as a reverse proxy in front of it handling automatic HTTPS (Let's Encrypt) for the `api.` domain. Has an Elastic IP (`100.57.201.123`) attached so the domain/cert survive a reboot - without it, a stopped/restarted instance gets a new public IP and both the DNS record and the cert break.
