@@ -148,6 +148,10 @@ builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
+    options.AddPolicy("contact", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 3, Window = TimeSpan.FromMinutes(15), QueueLimit = 0 }));
+
     // Blanket per-IP backstop for every endpoint. Generous enough that an office behind one NAT
     // address doing normal portal/admin work never trips it; low enough to stop a scripted flood.
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
@@ -173,7 +177,7 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 
-    // The homepage Line's clear-flush endpoint, the only anonymous write surface here. A visitor
+    // The homepage Line's anonymous clear-flush endpoint. A visitor
     // batches their clicks and flushes a handful of times in a normal session, more in a long one,
     // and a shared office address multiplies that. Generous on purpose: a rejected flush costs the
     // visitor nothing (their own backlog already cleared in the browser), and the real abuse
@@ -359,22 +363,25 @@ app.Use(async (context, next) =>
     await next();
 });
 
-app.UseRateLimiter();
+app.UseHttpsRedirection();
+app.UseCors(AppCorsPolicy);
 
 app.UseExceptionHandler(errorApp =>
 {
     errorApp.Run(async context =>
     {
         var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
-        if (exception is not null)
+        if (exception is not null && exception is not BadHttpRequestException)
         {
             var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalExceptionHandler");
             logger.LogError(exception, "Unhandled exception on {Method} {Path}", context.Request.Method, context.Request.Path);
         }
 
-        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.StatusCode = exception is BadHttpRequestException badRequest
+            ? badRequest.StatusCode : StatusCodes.Status500InternalServerError;
         context.Response.ContentType = "application/json";
-        await context.Response.WriteAsJsonAsync(new { message = "An unexpected error occurred." });
+        await context.Response.WriteAsJsonAsync(new { message = exception is BadHttpRequestException
+            ? "The request is invalid or too large." : "An unexpected error occurred." });
     });
 });
 
@@ -384,9 +391,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-
-app.UseCors(AppCorsPolicy);
+app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();

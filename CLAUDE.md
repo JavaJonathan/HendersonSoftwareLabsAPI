@@ -19,7 +19,7 @@ dotnet ef migrations add <Name>       # add a migration after changing an entity
 dotnet ef database update             # apply pending migrations to the local Postgres DB
 ```
 
-There is no automated test suite in this project.
+The inquiry integration harness is documented under Contact inquiries below.
 
 **Local dev prerequisites**: a running local PostgreSQL instance, and two values in `dotnet user-secrets` (never committed - `appsettings.json` only has placeholders):
 
@@ -48,11 +48,12 @@ dotnet run -- create-admin <email> <password>
 
 **Data model**: one `ApplicationUser` (`Entities/ApplicationUser.cs`, extends `IdentityUser` with `CompanyName`/`ContactName`) has many `SoftwareProject` (`Entities/SoftwareProject.cs`) via `ClientUserId`. `PortalController.GetMyProjects` filters strictly by the caller's own `NameIdentifier` claim - a client can only ever see their own projects, never another client's, and there is no endpoint that lets a client query anyone else's data. `AdminController` is the only place that can query/create across all clients, and it's gated by the `Admin` role.
 
-**Four controllers, four trust levels**:
+**Controller authorization boundaries**:
 - `AuthController` - `[AllowAnonymous]` login, `[Authorize]` `/me` (any authenticated user)
 - `PortalController` - `[Authorize]`, scoped to the caller's own data only
 - `AdminController` - `[Authorize(Roles = "Admin")]` on the whole controller
-- `LineController` - `[AllowAnonymous]` at class level, the only anonymous *write* surface in the API (backs the homepage's shared "Line" game); see its own doc comment for why that's deliberate and how writes are bounded
+- `ContactController` - `[AllowAnonymous]`, validates and stores inquiries; `AdminInquiriesController` requires Admin for inbox reads and status changes.
+- `LineController` - `[AllowAnonymous]` at class level, an anonymous *write* surface in the API (backs the homepage's shared "Line" game); see its own doc comment for why that's deliberate and how writes are bounded
 
 **CORS** is locked to the Vite dev origin (`http://localhost:5173`) via a named policy - update `Program.cs` if the frontend's dev port ever changes (it's pinned with `strictPort` on the UI side for exactly this reason).
 
@@ -96,3 +97,15 @@ DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 ./efbundle --connection "<connection str
 
 - `dotnet add package` with no `--version` grabs the newest release, which may target a newer TFM than this project's `net9.0` and fail to restore (bit this project with EF Core/Identity/JwtBearer, and again with `Swashbuckle.AspNetCore` pulling in a `Microsoft.OpenApi` v2 with breaking namespace changes). Always pin to the current `9.0.x` line explicitly when adding a Microsoft.* or EF Core package; `Swashbuckle.AspNetCore` specifically must stay on `9.0.6`, not `10.x`.
 - If `dotnet build`/`dotnet run` fails with an MSB3027 "file is locked by another process" error, a previous `dotnet run` is still holding the output DLL - find and kill it (`Get-NetTCPConnection -LocalPort 5194` in PowerShell) rather than fighting the build.
+
+## Contact inquiries (2026-09-19)
+
+`Inquiry` records are independent of Identity users and are stored in PostgreSQL by the additive `AddInquiries` migration. `POST /api/contact` is an anonymous write endpoint with a 32 KB body limit, field validation, honeypot and three requests per IP per 15 minutes. Submission UUIDs have a unique index; retries acknowledge receipt without creating a duplicate. No inquiry data is returned publicly and no email is sent.
+
+Admin-only `/api/admin/inquiries` endpoints list (status filter, 25-row pagination, new count), read details and PATCH `/{id}/status`. Status values are New, Contacted and Archived; timestamps are UTC. There is no deletion or automatic expiration. Do not log inquiry content or visitor contact details.
+
+CORS wraps exception handling and rate limiting so the UI can read failure responses. Oversized request exceptions preserve their HTTP status. The design-time DbContext factory allows migrations without starting the web host or loading JWT configuration. It reads local user secrets and environment variables; never point tests at production.
+
+Integration checks: build Release, then run `dotnet run --project tests/InquiryIntegration -c Release` from this repo. Set `ConnectionStrings__Default` to a localhost PostgreSQL administrator connection or configure local user secrets. The harness rejects remote hosts, creates a uniquely named disposable database, applies migrations, launches its own API, and removes its database afterward. It tests persistence, retries, validation, throttling, authorization, pagination, status changes and database failure.
+
+Rollout: apply the migration bundle before deploying the API, then deploy the UI. Jonathan checks the inbox manually; no notifications or automatic replies exist.

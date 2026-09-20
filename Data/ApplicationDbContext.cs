@@ -11,12 +11,23 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     }
 
     public DbSet<SoftwareProject> SoftwareProjects => Set<SoftwareProject>();
+    public DbSet<Inquiry> Inquiries => Set<Inquiry>();
 
     public DbSet<LineKindProgress> LineKindProgress => Set<LineKindProgress>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+
+        builder.Entity<Inquiry>(entity =>
+        {
+            entity.HasIndex(p => p.SubmissionId).IsUnique();
+            entity.HasIndex(p => new { p.Status, p.CreatedAt, p.Id });
+            entity.Property(p => p.Name).HasMaxLength(100);
+            entity.Property(p => p.Email).HasMaxLength(254);
+            entity.Property(p => p.Message).HasMaxLength(5000);
+            entity.Property(p => p.Status).HasConversion<string>().HasMaxLength(20);
+        });
 
         builder.Entity<SoftwareProject>(entity =>
         {
