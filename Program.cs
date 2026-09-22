@@ -132,6 +132,23 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<ILineTicketService, LineTicketService>();
 
+builder.Services.AddSingleton<IOpportunityEvaluator, SimulatedActiveProjectEvaluator>();
+builder.Services.AddSingleton<IOpportunityEvaluator, SimulatedBusinessProspectEvaluator>();
+builder.Services.AddHttpClient<JevActiveProjectEvaluator>(client =>
+{
+    client.BaseAddress = new Uri("https://api.typesafe.ai");
+    client.Timeout = TimeSpan.FromSeconds(15);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<JevBusinessProspectEvaluator>(client =>
+{
+    client.BaseAddress = new Uri("https://api.typesafe.ai");
+    client.Timeout = TimeSpan.FromSeconds(15);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddTransient<IOpportunityEvaluator>(sp => sp.GetRequiredService<JevActiveProjectEvaluator>());
+builder.Services.AddTransient<IOpportunityEvaluator>(sp => sp.GetRequiredService<JevBusinessProspectEvaluator>());
+builder.Services.AddScoped<IOpportunityCsvImportService, OpportunityCsvImportService>();
+builder.Services.AddScoped<IOpportunityImportService, OpportunityImportService>();
+
 builder.Services.AddAuthorization(options =>
 {
     // Fail closed: a controller/endpoint that carries no [Authorize]/[AllowAnonymous] now
