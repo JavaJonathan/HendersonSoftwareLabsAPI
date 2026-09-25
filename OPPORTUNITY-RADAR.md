@@ -1,6 +1,6 @@
 # Opportunity Radar operations
 
-Opportunity Radar is an admin-only workflow covering two entity types: **ActiveProject** (explicit project/RFP demand) and **BusinessProspect** (an established business with a weak web presence, buying intent normally `Unknown`). Imported descriptions must be public or otherwise non-confidential. Source URLs are stored as metadata and are never fetched by the server. See `CLAUDE.md`'s "Opportunity Radar: split into ActiveProject / BusinessProspect" section for the full architecture; this file covers day-to-day operation.
+Opportunity Radar is an admin-only workflow covering two entity types: **ActiveProject** and **BusinessProspect**. Jev is the only user-facing evaluator. Application code deterministically converts stored Jev judgments into score, confidence, priority, recommendation, and explainable checks. Imported descriptions must be public or otherwise non-confidential. Source URLs are stored as metadata and are never fetched by the server.
 
 ## Local setup
 
@@ -9,8 +9,6 @@ Apply the pending local migrations only after Jonathan approves the checkpoint r
 ```powershell
 dotnet ef database update
 ```
-
-The demonstration evaluator needs no additional configuration. It is deterministic and every result is labeled as simulated.
 
 To enable live Jev locally, keep the key in .NET user secrets:
 
@@ -40,9 +38,9 @@ Provider failures create an explicit failed evaluation record. They do not erase
 
 ## Preference changes
 
-Budget, scope, project preference, weights, and incomplete-information changes rescore stored judgments locally. Capability changes can alter the semantic fit question, so existing live Jev results become stale and require reevaluation. Simulated results are regenerated locally only when that entity type's preferences actually changed; saving preferences with only the digest counts changed does not add new evaluation history.
+Budget, scope, exclusions, and weight changes append immutable `LocalRecompose` evaluations from the latest valid Jev judgments. Capability changes can alter the Jev request, so Active Project evaluations become stale and require reevaluation. Saving only digest counts does not add evaluation history.
 
-Weights are normalized to sum to 100 before scoring, regardless of the raw values entered. This keeps the High/Medium/Low priority thresholds meaningful no matter what an admin types; there is no requirement that the entered weights themselves sum to 100.
+Active Project, Operational Pain, and Digital Presence each have independent relative weights. Hybrid prospects use the Operational Pain profile. Values are normalized to 100 before scoring. An all-zero group falls back to versioned defaults. Every evaluation stores its effective normalized profile.
 
 ## Verification
 
@@ -64,14 +62,14 @@ The ordinary test run never calls TypeSafe. The live contract should only be run
 
 ## Current limits
 
-The application does not crawl websites, send outreach, or claim Jev probabilities are win probabilities. It stores Jev probabilities and confidence in the provider response metadata for later calibration. There is no live external ingestion API for either type; agent-produced findings arrive as CSV (or paste) imports, same as manual entry.
+The application does not crawl websites, send outreach, or claim Jev probabilities are win probabilities. It stores Jev probabilities, per-answer confidence, Noul probabilities, selected passages, resolved model, and usage. Imported research confidence, reason, agent identity, and prospect type remain separate and are never sent to Jev. There is no live external ingestion API; agent-produced findings arrive as CSV or paste imports.
 
 Re-importing a record matches an existing one in this priority order: an exact `ExternalId` match (same entity type and synthetic flag) first, when the import supplies one; otherwise ActiveProject falls back to an exact content fingerprint (title, description, and source URL, so any rewording creates a new record instead), and BusinessProspect falls back to an exact website-domain match when a domain is present, or an exact business-name match when it is not. A match updates the existing row's source material in place (including its title and, for ActiveProject, its fingerprint) and never overwrites a decision or notes a human already recorded, but it does mark any prior `Ready` evaluation `Stale`, since it was computed from text that no longer exists.
 
 The digest only ever surfaces records you have not yet reviewed: once a record has any decision recorded (Pursue/Investigate/Pass or Prioritize/Watch/Skip), it stops appearing in the digest even if the model's recommendation would otherwise still qualify.
 
-## Comparison and export
+## Checks and export
 
-Each detail view compares the semantic evaluation with a literal keyword baseline. The baseline exposes matched terms, a coarse 0 to 3 keyword score, and every deterministic hard-rule outcome. Synthetic comparisons are labeled as illustrations, not benchmarks.
+Each detail view shows classification agreement, deterministic Info, Review, and Block checks, and the effective scoring profile. Review checks require verification, prevent a top recommendation, and exclude the record from the digest. Block checks force Pass or Skip. Imported research confidence never changes Opportunity Score or Jev Confidence.
 
-CSV export excludes synthetic examples by default. It includes source metadata, semantic factors, recommendation, baseline output, review decision, notes, and model metadata. Every field is quoted, embedded quotes are doubled, control characters are replaced with spaces, and leading ASCII or full-width formula characters are prefixed as text. Sanitization affects only the exported copy. Stored source and notes remain unchanged. CSV interpretation differs across spreadsheet programs, so exported files should still be treated as untrusted data when shared outside HSL.
+CSV export excludes synthetic examples by default. It includes source metadata, imported and evaluated types, confidence values, checks, effective weights, rubric version, evaluation origin, factors, review decision, notes, and model metadata. Every field is quoted, embedded quotes are doubled, control characters are replaced with spaces, and leading ASCII or full-width formula characters are prefixed as text. Sanitization affects only the exported copy.

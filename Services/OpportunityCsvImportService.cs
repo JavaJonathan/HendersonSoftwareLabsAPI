@@ -16,14 +16,18 @@ public sealed class OpportunityCsvImportService : IOpportunityCsvImportService
         ParseRows(csv, ["title", "description", "source_type"], value => new ActiveProjectImportRequest(
             value("title"), value("description"), NonEmpty(value("source_type")) ?? "ExplicitDemand",
             NullIfEmpty(value("source_name")), NullIfEmpty(value("source_url")),
-            ParseDate(value("source_date")), NullIfEmpty(value("external_id"))));
+            ParseDate(value("source_date")), NullIfEmpty(value("external_id")),
+            NullIfEmpty(value("research_confidence")), NullIfEmpty(value("research_confidence_reason")),
+            NullIfEmpty(value("research_agent"))));
 
     public IReadOnlyList<BusinessProspectImportRequest> ParseBusinessProspects(Stream csv) =>
         ParseRows(csv, ["business_name", "evidence"], value => new BusinessProspectImportRequest(
             value("business_name"), value("evidence"), NullIfEmpty(value("website_url")),
             NullIfEmpty(value("geography")), NullIfEmpty(value("industry")),
             NullIfEmpty(value("source_name")), NullIfEmpty(value("source_url")),
-            ParseDate(value("source_date")), NullIfEmpty(value("external_id"))));
+            ParseDate(value("source_date")), NullIfEmpty(value("external_id")),
+            NullIfEmpty(value("prospect_type")), NullIfEmpty(value("research_confidence")),
+            NullIfEmpty(value("research_confidence_reason")), NullIfEmpty(value("research_agent"))));
 
     private static List<T> ParseRows<T>(Stream csv, string[] requiredHeaders, Func<Func<string, string>, T> map)
     {

@@ -55,6 +55,9 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.Property(x => x.SourceName).HasMaxLength(200);
             entity.Property(x => x.SourceUrl).HasMaxLength(1000);
             entity.Property(x => x.ExternalId).HasMaxLength(200);
+            entity.Property(x => x.ResearchConfidence).HasConversion<string>().HasMaxLength(20);
+            entity.Property(x => x.ResearchConfidenceReason).HasMaxLength(500);
+            entity.Property(x => x.ResearchAgent).HasMaxLength(100);
             entity.Property(x => x.Fingerprint).HasMaxLength(64);
             entity.Property(x => x.SyntheticKey).HasMaxLength(100);
             entity.Property(x => x.Notes).HasMaxLength(5000);
@@ -83,6 +86,8 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.Property(x => x.NormalizedWebsiteDomain).HasMaxLength(255);
             entity.Property(x => x.Geography).HasMaxLength(200);
             entity.Property(x => x.Industry).HasMaxLength(200);
+            entity.Property(x => x.ImportedProspectType).HasConversion<string>().HasMaxLength(32);
+            entity.Property(x => x.ProspectTypeOverride).HasConversion<string>().HasMaxLength(32);
             entity.Property(x => x.UserDecision).HasConversion<string>().HasMaxLength(20);
             entity.HasIndex(x => x.NormalizedBusinessName);
             entity.HasIndex(x => x.NormalizedWebsiteDomain);
@@ -96,6 +101,12 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
             entity.Property(x => x.Recommendation).HasConversion<string>().HasMaxLength(20);
             entity.Property(x => x.PriorityBand).HasConversion<string>().HasMaxLength(20);
+            entity.Property(x => x.EvaluatedProspectType).HasConversion<string>().HasMaxLength(32);
+            entity.Property(x => x.Origin).HasConversion<string>().HasMaxLength(20);
+            entity.Property(x => x.OpportunityScore).HasPrecision(5, 2);
+            entity.Property(x => x.JevConfidence).HasPrecision(5, 4);
+            entity.Property(x => x.RubricVersion).HasMaxLength(50);
+            entity.Property(x => x.EffectiveWeightsJson).HasColumnType("jsonb");
             entity.Property(x => x.BudgetStatus).HasConversion<string>().HasMaxLength(20);
             entity.Property(x => x.Model).HasMaxLength(100);
             entity.Property(x => x.QuestionSetVersion).HasMaxLength(50);

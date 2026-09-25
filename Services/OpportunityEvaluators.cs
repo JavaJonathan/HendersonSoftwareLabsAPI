@@ -24,21 +24,6 @@ public interface IOpportunityEvaluator
     Task<OpportunityEvaluationOutcome> EvaluateAsync(Opportunity opportunity, RadarPreferences preferences, CancellationToken ct);
 }
 
-public sealed class SimulatedActiveProjectEvaluator : IOpportunityEvaluator
-{
-    public EvaluationProvider Provider => EvaluationProvider.Simulated;
-    public OpportunityEntityType SupportedEntityType => OpportunityEntityType.ActiveProject;
-    public bool IsAvailable => true;
-
-    public int EstimateMaximumInputTokens(Opportunity opportunity, RadarPreferences preferences) => 0;
-
-    public Task<OpportunityEvaluationOutcome> EvaluateAsync(Opportunity opportunity, RadarPreferences preferences, CancellationToken ct)
-    {
-        var (result, assessment) = OpportunityRadarEngine.EvaluateActiveProject(opportunity, preferences);
-        return Task.FromResult(new OpportunityEvaluationOutcome(Provider, "simulation-v1", OpportunityRadarEngine.Serialize(assessment), result, "{}", null, null));
-    }
-}
-
 public sealed class OpportunityEvaluationException(string code, string message, HttpStatusCode? providerStatus = null, Exception? inner = null)
     : Exception(message, inner)
 {
@@ -152,21 +137,44 @@ public abstract class JevEvaluatorBase(HttpClient httpClient, IConfiguration con
     {
         var answer = answers.GetProperty(key);
         if (RequiredString(answer, "type") != "choice") throw new InvalidDataException($"Jev answer {key} has the wrong type.");
-        return RequiredString(answer, "choice");
+        var choice = RequiredString(answer, "choice");
+        if (!answer.TryGetProperty("probabilities", out var probabilities) || probabilities.ValueKind != JsonValueKind.Object
+            || !probabilities.TryGetProperty(choice, out _))
+            throw new InvalidDataException($"Jev answer {key} is missing choice probabilities.");
+        foreach (var probability in probabilities.EnumerateObject())
+        {
+            if (!probability.Value.TryGetDouble(out var value) || !double.IsFinite(value) || value is < 0 or > 1)
+                throw new InvalidDataException($"Jev answer {key} has an invalid choice probability.");
+        }
+        _ = ConfidenceValue(answers, key);
+        return choice;
     }
 
     protected static double ScoreValue(JsonElement answers, string key)
     {
         var answer = answers.GetProperty(key);
         if (RequiredString(answer, "type") != "score") throw new InvalidDataException($"Jev answer {key} has the wrong type.");
-        return answer.GetProperty("score").GetDouble();
+        var value = answer.GetProperty("score").GetDouble();
+        if (!double.IsFinite(value) || value is < 0 or > 3) throw new InvalidDataException($"Jev answer {key} has an invalid score.");
+        return value;
+    }
+
+    protected static double ConfidenceValue(JsonElement answers, string key)
+    {
+        var answer = answers.GetProperty(key);
+        if (!answer.TryGetProperty("confidence", out var confidence) || !confidence.TryGetDouble(out var value))
+            throw new InvalidDataException($"Jev answer {key} is missing confidence.");
+        if (!double.IsFinite(value) || value is < 0 or > 1) throw new InvalidDataException($"Jev answer {key} has invalid confidence.");
+        return value;
     }
 
     protected static double NoulValue(JsonElement answers, string key)
     {
         var answer = answers.GetProperty(key);
         if (RequiredString(answer, "type") != "noul") throw new InvalidDataException($"Jev answer {key} has the wrong type.");
-        return answer.GetProperty("noul").GetDouble();
+        var value = answer.GetProperty("noul").GetDouble();
+        if (!double.IsFinite(value) || value is < 0 or > 1) throw new InvalidDataException($"Jev answer {key} has an invalid Noul probability.");
+        return value;
     }
 
     protected static string RequiredString(JsonElement element, string property)
@@ -190,7 +198,7 @@ public abstract class JevEvaluatorBase(HttpClient httpClient, IConfiguration con
 public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevActiveProjectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-active-project-jev-v1";
+    public const string QuestionSetVersion = "radar-active-project-jev-v2";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.ActiveProject;
 
@@ -204,11 +212,10 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
         try
         {
             var parsed = ParseResponse(responseJson, opportunity);
-            var result = OpportunityRadarEngine.ComposeActiveProject(opportunity, preferences, parsed.Assessment,
-                ["Opportunity kind and fit are Jev model judgments, not facts or a probability of winning work."]);
+            var result = OpportunityRadarV2.ComposeActiveProject(opportunity, preferences, parsed.Assessment);
             logger.LogInformation("Jev evaluation completed for opportunity {OpportunityId} with model {Model}, input tokens {InputTokens}, output tokens {OutputTokens}",
                 opportunity.Id, parsed.Model, parsed.InputTokens, parsed.OutputTokens);
-            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarEngine.Serialize(parsed.Assessment), result,
+            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarV2.Serialize(parsed.Assessment), result,
                 responseJson, parsed.InputTokens, parsed.OutputTokens);
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException or KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
@@ -248,25 +255,23 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
                 ["portal"] = "Authenticated customer or partner portal.", ["existing_software"] = "Improve or repair existing custom software.",
                 ["greenfield_product"] = "Build a new commercial software product.", ["staffing"] = "Employment or staff augmentation.", ["other"] = null
             }),
-            ["problem_concreteness"] = Noul("Is there a concrete software-related business problem with a recognizable outcome? Vague requests without an outcome are false."),
-            ["capability_fit"] = Score("How well does the work itself fit the listed `hsl_capabilities`? Judge transferable work, not keyword overlap alone.",
-                ["No meaningful fit", "Adjacent but weak fit", "Good fit", "Strong fit with demonstrated HSL strengths"]),
-            ["solo_feasibility"] = Noul("Could one experienced independent engineer plausibly own and deliver a useful first version? Full-time, multi-year, or large-team roles are false."),
-            ["information_sufficiency"] = Score("How much useful information is present for an initial opportunity review? Do not penalize only because budget or timeline is absent.", fourPoint),
-            ["dependency_risk"] = Choice("Choose the most important delivery dependency visible in the source.", new Dictionary<string, object?>
-            {
-                ["none"] = "No material dependency is stated.", ["unclear"] = "A dependency may exist but is not clear.",
-                ["third_party_api"] = "Access, capability, documentation, or approval for an external API is uncertain.",
-                ["enterprise_team_scale"] = "Success depends on a large team, broad transformation, or ongoing staffing."
-            }),
-            ["problem_evidence"] = Choice("Choose the single passage that best supports the problem-concreteness judgment. Choose none when no passage supports it.", evidenceCriteria),
-            ["fit_evidence"] = Choice("Choose the single passage that best supports the capability-fit judgment. Choose none when no passage supports it.", evidenceCriteria),
-            ["concern_evidence"] = Choice("Choose the single passage that best supports the scope or dependency concern. Choose none when there is no concern.", evidenceCriteria)
+            ["problem_clarity"] = Score("How clearly does the source establish a concrete software-related problem and desired outcome?", fourPoint),
+            ["hsl_delivery_fit"] = Score("How well does the work fit the listed hsl_capabilities? Judge the work, not keyword overlap.", fourPoint),
+            ["independent_scope"] = Score("How feasible is a useful first version for one experienced independent engineer?", fourPoint),
+            ["economic_viability"] = Score("How plausible is meaningful economic value relative to a contained software engagement? Do not invent ROI.", fourPoint),
+            ["urgency"] = Score("How strong is the direct evidence of timing or urgency?", fourPoint),
+            ["buyer_readiness"] = Score("How actionable is the demand, including access to a buyer and an identifiable next step?", fourPoint),
+            ["information_market_fit"] = Score("How sufficient is the source for an initial decision, including market and delivery context?", fourPoint),
+            ["employment_or_staffing"] = Noul("Is this primarily employment, staff augmentation, or an ongoing role rather than an independent project?"),
+            ["team_scale"] = Noul("Does success appear to require a large team, broad transformation, or multi-year delivery?"),
+            ["core_system_replacement"] = Noul("Does the request appear to require replacing a specialized core ERP, dispatch, medical, financial, or similar system rather than complementing it?"),
+            ["primary_evidence"] = Choice("Choose the single passage that best supports the problem and fit judgments. Choose none when unsupported.", evidenceCriteria),
+            ["concern_evidence"] = Choice("Choose the single passage that best supports any delivery concern. Choose none when there is no concern.", evidenceCriteria)
         };
         return JsonSerializer.Serialize(new { state, model = Model, questions });
     }
 
-    private static (string Model, ActiveProjectAssessment Assessment, int InputTokens, int OutputTokens) ParseResponse(string json, Opportunity opportunity)
+    private static (string Model, ActiveProjectV2Assessment Assessment, int InputTokens, int OutputTokens) ParseResponse(string json, Opportunity opportunity)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -286,20 +291,25 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
             "reporting" => "Reporting", "portal" => "Portal", "existing_software" => "ExistingSoftware",
             "greenfield_product" => "GreenfieldProduct", "staffing" => "FullTimeEmployment", _ => "Other"
         };
-        var problem = NoulValue(answers, "problem_concreteness") >= 0.67 ? 3 : NoulValue(answers, "problem_concreteness") >= 0.4 ? 2 : 1;
-        var fit = (int)Math.Round(ScoreValue(answers, "capability_fit"), MidpointRounding.AwayFromZero);
-        var scope = NoulValue(answers, "solo_feasibility") >= 0.67 ? 3 : NoulValue(answers, "solo_feasibility") >= 0.4 ? 2 : 0;
-        var information = (int)Math.Round(ScoreValue(answers, "information_sufficiency"), MidpointRounding.AwayFromZero);
-        var dependency = ChoiceValue(answers, "dependency_risk") switch
-        {
-            "third_party_api" => "ThirdPartyApi", "enterprise_team_scale" => "EnterpriseTeamScale",
-            "unclear" => "Unclear", _ => "None"
-        };
         var passageIds = (OpportunityRadarEngine.DeserializePassages(opportunity.SourcePassagesJson)).Select(x => x.Id).ToHashSet();
         passageIds.Add("none");
-        var assessment = new ActiveProjectAssessment(kind, projectType, Math.Clamp(problem, 0, 3), Math.Clamp(fit, 0, 3), Math.Clamp(scope, 0, 3),
-            Math.Clamp(information, 0, 3), dependency, ValidateEvidenceChoice(answers, "problem_evidence", passageIds),
-            ValidateEvidenceChoice(answers, "fit_evidence", passageIds), ValidateEvidenceChoice(answers, "concern_evidence", passageIds));
+        var primaryEvidence = ValidateEvidenceChoice(answers, "primary_evidence", passageIds);
+        var factors = new Dictionary<string, JevJudgment>
+        {
+            ["problemClarity"] = Judgment(answers, "problem_clarity", primaryEvidence),
+            ["hslDeliveryFit"] = Judgment(answers, "hsl_delivery_fit", primaryEvidence),
+            ["independentScope"] = Judgment(answers, "independent_scope", primaryEvidence),
+            ["economicViability"] = Judgment(answers, "economic_viability", primaryEvidence),
+            ["urgency"] = Judgment(answers, "urgency", primaryEvidence),
+            ["buyerReadiness"] = Judgment(answers, "buyer_readiness", primaryEvidence),
+            ["informationMarketFit"] = Judgment(answers, "information_market_fit", primaryEvidence)
+        };
+        var assessment = new ActiveProjectV2Assessment(kind.ToString(), ConfidenceValue(answers, "opportunity_kind"), projectType, factors,
+            NoulValue(answers, "employment_or_staffing") >= 0.67, NoulValue(answers, "team_scale") >= 0.67,
+            NoulValue(answers, "core_system_replacement") >= 0.67, ValidateEvidenceChoice(answers, "concern_evidence", passageIds));
         return (resolvedModel, assessment, usage.GetProperty("input_tokens").GetInt32(), usage.GetProperty("output_tokens").GetInt32());
     }
+
+    private static JevJudgment Judgment(JsonElement answers, string key, string evidence) =>
+        new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), evidence);
 }

@@ -4,25 +4,10 @@ using HendersonSoftwareLabsAPI.Entities;
 
 namespace HendersonSoftwareLabsAPI.Services;
 
-public sealed class SimulatedBusinessProspectEvaluator : IOpportunityEvaluator
-{
-    public EvaluationProvider Provider => EvaluationProvider.Simulated;
-    public OpportunityEntityType SupportedEntityType => OpportunityEntityType.BusinessProspect;
-    public bool IsAvailable => true;
-
-    public int EstimateMaximumInputTokens(Opportunity opportunity, RadarPreferences preferences) => 0;
-
-    public Task<OpportunityEvaluationOutcome> EvaluateAsync(Opportunity opportunity, RadarPreferences preferences, CancellationToken ct)
-    {
-        var (result, assessment) = OpportunityRadarEngine.EvaluateBusinessProspect(opportunity, preferences);
-        return Task.FromResult(new OpportunityEvaluationOutcome(Provider, "simulation-v1", OpportunityRadarEngine.Serialize(assessment), result, "{}", null, null));
-    }
-}
-
 public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevBusinessProspectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-business-prospect-jev-v1";
+    public const string QuestionSetVersion = "radar-business-prospect-jev-v2";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.BusinessProspect;
 
@@ -39,11 +24,10 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
         try
         {
             var parsed = ParseResponse(responseJson, opportunity);
-            var result = OpportunityRadarEngine.ComposeBusinessProspect(opportunity, preferences, parsed.Assessment,
-                ["Business strength, digital-presence weakness, and entry-project judgments are Jev model judgments, not facts or a probability of winning work."]);
+            var result = OpportunityRadarV2.ComposeBusinessProspect(opportunity, preferences, parsed.Assessment);
             logger.LogInformation("Jev evaluation completed for opportunity {OpportunityId} with model {Model}, input tokens {InputTokens}, output tokens {OutputTokens}",
                 opportunity.Id, parsed.Model, parsed.InputTokens, parsed.OutputTokens);
-            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarEngine.Serialize(parsed.Assessment), result,
+            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarV2.Serialize(parsed.Assessment), result,
                 responseJson, parsed.InputTokens, parsed.OutputTokens);
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException or KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
@@ -68,51 +52,72 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
         var fourPoint = new[] { "No evidence", "Weak or ambiguous", "Useful initial evidence", "Clear and concrete" };
         var questions = new Dictionary<string, object>
         {
-            ["buying_intent"] = Choice(
-                "Classify buying intent using only explicit evidence (a request for proposals or quotes, a help-wanted listing implying the gap, a stated intention to hire or buy software). A weak, outdated, or broken website alone is never evidence of buying intent or an internal workflow problem.",
+            ["prospect_type"] = Choice(
+                "Classify the opportunity using only the supplied evidence. Do not infer operational pain from industry norms or from a weak website.",
                 new Dictionary<string, object?>
                 {
-                    ["unknown"] = "No explicit buying-intent evidence exists.",
-                    ["weak"] = "Some ambiguous or indirect signal exists.",
-                    ["moderate"] = "A plausible but unconfirmed signal exists.",
-                    ["strong"] = "Explicit, direct evidence of intent to buy or hire exists."
+                    ["operational_pain"] = "Direct evidence supports a costly, repetitive, software-addressable workflow problem.",
+                    ["digital_presence"] = "The supported opportunity is primarily a weak website or digital customer experience.",
+                    ["hybrid"] = "Direct operational pain exists and digital weakness offers an additional entry path.",
+                    ["unknown"] = "The evidence does not support one of the other classifications."
                 }),
-            ["business_strength"] = Score("How strong and established does this business appear from real-world signals (reviews, longevity, staff size, visible traction)? Judge the business itself, never its website.", fourPoint),
-            ["digital_presence_weakness"] = Score("How weak or outdated is the observable digital presence relative to a business of this evident size? Higher score means a larger observable gap.", fourPoint),
-            ["reputation_website_mismatch"] = Score("How large is the gap between real-world reputation and what the website conveys?", fourPoint),
-            ["entry_project_strength"] = Score("How plausible and well-scoped is an initial engagement (e.g. a website rebuild, a booking system, a basic SEO fix) that this business could act on without deep internal integration?", fourPoint),
-            ["contactability"] = Score("How reachable is a decision-maker at this business from the evidence (working contact page, listed phone or email, named owner)?", fourPoint),
-            ["evidence_completeness"] = Score("How much verifiable evidence is present for an initial review? Do not penalize only because buying intent is absent.", fourPoint),
-            ["entry_project_evidence"] = Choice("Choose the single passage that best supports the entry-project judgment. Choose none when no passage supports it.", evidenceCriteria),
-            ["reputation_evidence"] = Choice("Choose the single passage that best supports the reputation or business-strength judgment. Choose none when no passage supports it.", evidenceCriteria),
-            ["contact_evidence"] = Choice("Choose the single passage that best supports the contactability judgment. Choose none when no passage supports it.", evidenceCriteria)
+            ["pain_evidence"] = Score("How strong and direct is the evidence of costly or repetitive operational pain?", fourPoint),
+            ["automation_feasibility"] = Score("How feasible is a narrow software, automation, or integration response without replacing a core system?", fourPoint),
+            ["economic_leverage"] = Score("How plausible is meaningful economic leverage? Do not treat a full salary as recoverable savings or invent ROI.", fourPoint),
+            ["contained_engagement"] = Score("How plausible is a contained first engagement HSL could deliver?", fourPoint),
+            ["urgency"] = Score("How strong is the direct evidence of urgency or favorable timing?", fourPoint),
+            ["hsl_delivery_fit"] = Score("How well does the opportunity fit a small custom-software consultancy focused on integrations, automation, portals, reporting, and web applications?", fourPoint),
+            ["buyer_access"] = Score("How reachable and identifiable is a likely buyer or decision-maker?", fourPoint),
+            ["business_strength"] = Score("How established does the business appear from real-world signals? Judge the business, not its website.", fourPoint),
+            ["digital_weakness"] = Score("How weak is the observable digital presence relative to the business?", fourPoint),
+            ["reputation_mismatch"] = Score("How large is the gap between real-world reputation and the digital presence?", fourPoint),
+            ["entry_project_strength"] = Score("How plausible and well-scoped is a first digital-presence engagement?", fourPoint),
+            ["speculative_workflow"] = Noul("Are the claimed workflow problems supported mainly by industry assumptions rather than direct observed evidence?"),
+            ["physical_or_judgment_heavy"] = Noul("Is the work primarily physical, relationship-based, judgment-heavy, or dominated by unpredictable exceptions?"),
+            ["core_system_replacement"] = Noul("Would the likely solution require replacing a specialized core ERP, dispatch, medical, financial, or similar system?"),
+            ["primary_evidence"] = Choice("Choose the passage that best supports the primary opportunity judgment. Choose none when unsupported.", evidenceCriteria),
+            ["concern_evidence"] = Choice("Choose the passage that best supports any concern. Choose none when there is no concern.", evidenceCriteria)
         };
         return JsonSerializer.Serialize(new { state, model = Model, questions });
     }
 
-    private static (string Model, BusinessProspectAssessment Assessment, int InputTokens, int OutputTokens) ParseResponse(string json, Opportunity opportunity)
+    private static (string Model, BusinessProspectV2Assessment Assessment, int InputTokens, int OutputTokens) ParseResponse(string json, Opportunity opportunity)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
         var resolvedModel = RequiredString(root, "model");
         var answers = root.GetProperty("answers");
         var usage = root.GetProperty("usage");
-        var buyingIntent = ChoiceValue(answers, "buying_intent") switch
+        var prospectType = ChoiceValue(answers, "prospect_type") switch
         {
-            "weak" => "Weak", "moderate" => "Moderate", "strong" => "Strong", _ => "Unknown"
+            "operational_pain" => BusinessProspectType.OperationalPain,
+            "digital_presence" => BusinessProspectType.DigitalPresence,
+            "hybrid" => BusinessProspectType.Hybrid,
+            _ => BusinessProspectType.Unknown
         };
-        var businessStrength = (int)Math.Round(ScoreValue(answers, "business_strength"), MidpointRounding.AwayFromZero);
-        var digitalWeakness = (int)Math.Round(ScoreValue(answers, "digital_presence_weakness"), MidpointRounding.AwayFromZero);
-        var reputationMismatch = (int)Math.Round(ScoreValue(answers, "reputation_website_mismatch"), MidpointRounding.AwayFromZero);
-        var entryProject = (int)Math.Round(ScoreValue(answers, "entry_project_strength"), MidpointRounding.AwayFromZero);
-        var contactability = (int)Math.Round(ScoreValue(answers, "contactability"), MidpointRounding.AwayFromZero);
-        var evidenceCompleteness = (int)Math.Round(ScoreValue(answers, "evidence_completeness"), MidpointRounding.AwayFromZero);
         var passageIds = (OpportunityRadarEngine.DeserializePassages(opportunity.SourcePassagesJson)).Select(x => x.Id).ToHashSet();
         passageIds.Add("none");
-        var assessment = new BusinessProspectAssessment(buyingIntent, Math.Clamp(businessStrength, 0, 3), Math.Clamp(digitalWeakness, 0, 3),
-            Math.Clamp(reputationMismatch, 0, 3), Math.Clamp(entryProject, 0, 3), Math.Clamp(contactability, 0, 3), Math.Clamp(evidenceCompleteness, 0, 3),
-            ValidateEvidenceChoice(answers, "entry_project_evidence", passageIds), ValidateEvidenceChoice(answers, "reputation_evidence", passageIds),
-            ValidateEvidenceChoice(answers, "contact_evidence", passageIds));
+        var evidence = ValidateEvidenceChoice(answers, "primary_evidence", passageIds);
+        var factors = new Dictionary<string, JevJudgment>
+        {
+            ["painEvidence"] = Judgment(answers, "pain_evidence", evidence),
+            ["automationFeasibility"] = Judgment(answers, "automation_feasibility", evidence),
+            ["economicLeverage"] = Judgment(answers, "economic_leverage", evidence),
+            ["containedEngagement"] = Judgment(answers, "contained_engagement", evidence),
+            ["urgency"] = Judgment(answers, "urgency", evidence),
+            ["hslDeliveryFit"] = Judgment(answers, "hsl_delivery_fit", evidence),
+            ["buyerAccess"] = Judgment(answers, "buyer_access", evidence),
+            ["businessStrength"] = Judgment(answers, "business_strength", evidence),
+            ["digitalWeakness"] = Judgment(answers, "digital_weakness", evidence),
+            ["reputationMismatch"] = Judgment(answers, "reputation_mismatch", evidence),
+            ["entryProjectStrength"] = Judgment(answers, "entry_project_strength", evidence)
+        };
+        var assessment = new BusinessProspectV2Assessment(prospectType, ConfidenceValue(answers, "prospect_type"), factors,
+            NoulValue(answers, "speculative_workflow") >= 0.67, NoulValue(answers, "physical_or_judgment_heavy") >= 0.67,
+            NoulValue(answers, "core_system_replacement") >= 0.67, ValidateEvidenceChoice(answers, "concern_evidence", passageIds));
         return (resolvedModel, assessment, usage.GetProperty("input_tokens").GetInt32(), usage.GetProperty("output_tokens").GetInt32());
     }
+
+    private static JevJudgment Judgment(JsonElement answers, string key, string evidence) =>
+        new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), evidence);
 }

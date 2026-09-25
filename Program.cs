@@ -132,8 +132,6 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<ILineTicketService, LineTicketService>();
 
-builder.Services.AddSingleton<IOpportunityEvaluator, SimulatedActiveProjectEvaluator>();
-builder.Services.AddSingleton<IOpportunityEvaluator, SimulatedBusinessProspectEvaluator>();
 builder.Services.AddHttpClient<JevActiveProjectEvaluator>(client =>
 {
     client.BaseAddress = new Uri("https://api.typesafe.ai");

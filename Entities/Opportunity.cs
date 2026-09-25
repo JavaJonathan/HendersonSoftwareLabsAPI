@@ -11,6 +11,11 @@ public enum EvaluationStatus { Ready, Failed, Stale }
 public enum EvaluationProvider { Simulated, Jev }
 public enum PriorityBand { High, Medium, Low }
 public enum IncompleteInformationTolerance { Low, Medium, High }
+public enum BusinessProspectType { OperationalPain, DigitalPresence, Hybrid, Unknown }
+public enum ResearchConfidence { Low, Medium, High }
+public enum EvaluationOrigin { ProviderRun, LocalRecompose }
+public enum EvaluationCheckSeverity { Info, Review, Block }
+public enum EvaluationCheckCategory { Concern, EvidenceGap }
 
 public class Opportunity
 {
@@ -22,6 +27,9 @@ public class Opportunity
     public string? SourceUrl { get; set; }
     public DateTime? SourceDate { get; set; }
     public string? ExternalId { get; set; }
+    public ResearchConfidence? ResearchConfidence { get; set; }
+    public string? ResearchConfidenceReason { get; set; }
+    public string? ResearchAgent { get; set; }
     public string SourcePassagesJson { get; set; } = "[]";
     public string Fingerprint { get; set; } = "";
     public int? DuplicateOfId { get; set; }
@@ -53,6 +61,8 @@ public class BusinessProspectDetail
     public string? NormalizedWebsiteDomain { get; set; }
     public string? Geography { get; set; }
     public string? Industry { get; set; }
+    public BusinessProspectType? ImportedProspectType { get; set; }
+    public BusinessProspectType? ProspectTypeOverride { get; set; }
     public BusinessProspectDecision? UserDecision { get; set; }
 }
 
@@ -67,6 +77,14 @@ public class OpportunityEvaluation
     public string QuestionSetVersion { get; set; } = "radar-v1";
     public OpportunityRecommendation? Recommendation { get; set; }
     public PriorityBand? PriorityBand { get; set; }
+    public decimal? OpportunityScore { get; set; }
+    public decimal? JevConfidence { get; set; }
+    public BusinessProspectType? EvaluatedProspectType { get; set; }
+    public bool NeedsVerification { get; set; }
+    public string RubricVersion { get; set; } = "radar-v1";
+    public EvaluationOrigin Origin { get; set; } = EvaluationOrigin.ProviderRun;
+    public int? SourceEvaluationId { get; set; }
+    public string EffectiveWeightsJson { get; set; } = "{}";
     public BudgetStatus BudgetStatus { get; set; }
     public string AssessmentJson { get; set; } = "{}";
     public string ResultJson { get; set; } = "{}";

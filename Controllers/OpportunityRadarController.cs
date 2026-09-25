@@ -17,19 +17,21 @@ namespace HendersonSoftwareLabsAPI.Controllers;
 public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOpportunityEvaluator> evaluators,
     IOpportunityCsvImportService csvImportService, IOpportunityImportService importService, IConfiguration configuration) : ControllerBase
 {
-    public record EvaluateRequest(int[]? OpportunityIds, string Provider = "Simulated", string? ConfirmationCode = null);
-    public record EvaluationPreviewRequest(int[]? OpportunityIds, string Provider = "Jev");
+    public record EvaluateRequest(int[]? OpportunityIds, string? ConfirmationCode = null);
+    public record EvaluationPreviewRequest(int[]? OpportunityIds);
     public record ReviewRequest(string? Decision, [StringLength(5000)] string Notes);
+    public record ProspectTypeOverrideRequest(string? ProspectType);
     public record ActiveProjectPreferencesRequest(string[] Capabilities, string[] PreferredProjectTypes, string[] ExcludedProjectTypes,
-        decimal MinimumBudget, int MinimumWeeks, int MaximumWeeks, string IncompleteInformationTolerance, Dictionary<string, int>? Weights);
+        decimal MinimumBudget, string IncompleteInformationTolerance, Dictionary<string, decimal>? WeightsV2);
     public record BusinessProspectPreferencesRequest(string[] PreferredIndustries, string[] ExcludedIndustries,
-        string[] PreferredGeographies, string[] ExcludedGeographies, Dictionary<string, int>? Weights);
+        string[] PreferredGeographies, string[] ExcludedGeographies, Dictionary<string, decimal>? OperationalPainWeights,
+        Dictionary<string, decimal>? DigitalPresenceWeights);
     public record PreferencesRequest(ActiveProjectPreferencesRequest ActiveProject, BusinessProspectPreferencesRequest BusinessProspect,
         int DigestActiveProjectCount = 3, int DigestBusinessProspectCount = 2);
 
     [HttpGet]
     public async Task<IActionResult> List(string entityType = "All", string recommendation = "All", string sourceType = "All",
-        string decision = "All", string? query = null, int page = 1, CancellationToken ct = default)
+        string decision = "All", string prospectType = "All", string verification = "All", string? query = null, int page = 1, CancellationToken ct = default)
     {
         const int pageSize = 25;
         if (page < 1 || page > 1_000_000) return BadRequest(new { message = "Invalid page." });
@@ -77,8 +79,11 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 Industry = x.BusinessProspectDetail != null ? x.BusinessProspectDetail.Industry : null,
                 Geography = x.BusinessProspectDetail != null ? x.BusinessProspectDetail.Geography : null,
                 WebsiteDomain = x.BusinessProspectDetail != null ? x.BusinessProspectDetail.NormalizedWebsiteDomain : null,
+                ImportedProspectType = x.BusinessProspectDetail != null ? x.BusinessProspectDetail.ImportedProspectType : null,
+                ProspectTypeOverride = x.BusinessProspectDetail != null ? x.BusinessProspectDetail.ProspectTypeOverride : null,
                 Latest = x.Evaluations.OrderByDescending(e => e.CreatedAt)
-                    .Select(e => new { e.Recommendation, e.PriorityBand, e.BudgetStatus, e.Summary, e.Status, e.Provider })
+                    .Select(e => new { e.Recommendation, e.PriorityBand, e.BudgetStatus, e.Summary, e.Status, e.Provider,
+                        e.OpportunityScore, e.JevConfidence, e.EvaluatedProspectType, e.NeedsVerification })
                     .FirstOrDefault()
             });
 
@@ -86,6 +91,16 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             projected = projected.Where(x => x.Latest != null && x.Latest.Recommendation == recommendationFilter);
         if (sourceTypeFilter is not null)
             projected = projected.Where(x => x.SourceType == sourceTypeFilter);
+        if (!prospectType.Equals("All", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!Enum.TryParse<BusinessProspectType>(prospectType.Replace(" ", ""), true, out var parsedType) || !Enum.IsDefined(parsedType)) return EmptyList();
+            projected = projected.Where(x => x.Latest != null && (x.ProspectTypeOverride ?? x.Latest.EvaluatedProspectType ?? x.ImportedProspectType) == parsedType);
+        }
+        if (verification.Equals("NeedsVerification", StringComparison.OrdinalIgnoreCase))
+            projected = projected.Where(x => x.Latest != null && x.Latest.NeedsVerification);
+        else if (verification.Equals("Clear", StringComparison.OrdinalIgnoreCase))
+            projected = projected.Where(x => x.Latest != null && !x.Latest.NeedsVerification);
+        else if (!verification.Equals("All", StringComparison.OrdinalIgnoreCase)) return EmptyList();
         if (wantsUnreviewed)
             projected = projected.Where(x => x.ActiveDecision == null && x.ProspectDecision == null);
         else if (activeDecisionFilter is not null || prospectDecisionFilter is not null)
@@ -96,10 +111,9 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
 
         var total = await projected.CountAsync(ct);
         var pageItems = await projected
-            .OrderBy(x => x.Latest == null || x.Latest.PriorityBand == null ? 3
-                : x.Latest.PriorityBand == PriorityBand.High ? 0
-                : x.Latest.PriorityBand == PriorityBand.Medium ? 1
-                : x.Latest.PriorityBand == PriorityBand.Low ? 2 : 3)
+            .OrderByDescending(x => x.Latest != null && x.Latest.Status == EvaluationStatus.Ready && x.Latest.OpportunityScore != null)
+            .ThenByDescending(x => x.Latest != null ? x.Latest.OpportunityScore ?? -1m : -1m)
+            .ThenByDescending(x => x.Latest != null ? x.Latest.JevConfidence ?? -1m : -1m)
             .ThenByDescending(x => x.CreatedAt)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
 
@@ -111,6 +125,9 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             recommendation = x.Latest?.Recommendation?.ToString(), priorityBand = x.Latest?.PriorityBand?.ToString(),
             budgetStatus = x.EntityType == OpportunityEntityType.ActiveProject ? (x.Latest?.BudgetStatus ?? BudgetStatus.Unknown).ToString() : null,
             summary = x.Latest?.Summary, evaluationStatus = x.Latest?.Status.ToString(), evaluationProvider = x.Latest?.Provider.ToString(),
+            opportunityScore = x.Latest?.OpportunityScore, jevConfidence = x.Latest?.JevConfidence,
+            prospectType = (x.ProspectTypeOverride ?? x.Latest?.EvaluatedProspectType ?? x.ImportedProspectType)?.ToString(),
+            needsVerification = x.Latest?.NeedsVerification ?? false,
             userDecision = x.EntityType == OpportunityEntityType.ActiveProject ? x.ActiveDecision?.ToString() : x.ProspectDecision?.ToString(),
             x.DuplicateOfId, x.IsSynthetic, x.CreatedAt,
             industry = x.EntityType == OpportunityEntityType.ActiveProject ? null : x.Industry,
@@ -138,6 +155,9 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             opportunity.SourceUrl,
             opportunity.SourceDate,
             opportunity.ExternalId,
+            researchConfidence = opportunity.ResearchConfidence?.ToString(),
+            opportunity.ResearchConfidenceReason,
+            opportunity.ResearchAgent,
             passages = JsonSerializer.Deserialize<object>(opportunity.SourcePassagesJson),
             opportunity.DuplicateOfId,
             opportunity.IsSynthetic,
@@ -155,6 +175,8 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 normalizedWebsiteDomain = opportunity.BusinessProspectDetail.NormalizedWebsiteDomain,
                 geography = opportunity.BusinessProspectDetail.Geography,
                 industry = opportunity.BusinessProspectDetail.Industry,
+                importedProspectType = opportunity.BusinessProspectDetail.ImportedProspectType?.ToString(),
+                prospectTypeOverride = opportunity.BusinessProspectDetail.ProspectTypeOverride?.ToString(),
                 userDecision = opportunity.BusinessProspectDetail.UserDecision?.ToString()
             },
             evaluation = evaluation is null ? null : new
@@ -167,6 +189,13 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 recommendation = evaluation.Recommendation?.ToString(),
                 priorityBand = evaluation.PriorityBand?.ToString(),
                 budgetStatus = evaluation.BudgetStatus.ToString(),
+                evaluation.OpportunityScore,
+                evaluation.JevConfidence,
+                evaluatedProspectType = evaluation.EvaluatedProspectType?.ToString(),
+                evaluation.NeedsVerification,
+                evaluation.RubricVersion,
+                origin = evaluation.Origin.ToString(),
+                effectiveWeights = JsonSerializer.Deserialize<object>(evaluation.EffectiveWeightsJson),
                 result = evaluation.Status == EvaluationStatus.Failed ? null : JsonSerializer.Deserialize<object>(evaluation.ResultJson),
                 evaluation.Summary,
                 evaluation.NextStep,
@@ -175,46 +204,6 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 evaluation.ErrorMessage,
                 evaluation.CreatedAt
             }
-        });
-    }
-
-    [HttpGet("{id:int}/comparison")]
-    public async Task<IActionResult> Comparison(int id, CancellationToken ct)
-    {
-        var opportunity = await db.Opportunities.AsNoTracking().Include(x => x.Evaluations)
-            .Include(x => x.ActiveProjectDetail).Include(x => x.BusinessProspectDetail)
-            .SingleOrDefaultAsync(x => x.Id == id, ct);
-        if (opportunity is null) return NotFound();
-        var latest = opportunity.Evaluations.OrderByDescending(x => x.CreatedAt).FirstOrDefault();
-        object? baseline = null;
-        string? baselineUnavailableReason = null;
-        if (opportunity.EntityType == OpportunityEntityType.ActiveProject)
-        {
-            var keyword = OpportunityRadarReporting.KeywordBaseline(opportunity, await GetOrCreatePreferences(ct));
-            baseline = new
-            {
-                keyword.MatchedTerms, keyword.KeywordScore, recommendation = keyword.Recommendation.ToString(),
-                budgetStatus = keyword.BudgetStatus.ToString(), keyword.HardRules, keyword.Summary
-            };
-        }
-        else
-        {
-            baselineUnavailableReason = "Keyword baseline is only computed for Active Projects.";
-        }
-        return Ok(new
-        {
-            baseline,
-            baselineUnavailableReason,
-            semantic = latest is null ? null : new
-            {
-                provider = latest.Provider.ToString(), status = latest.Status.ToString(), model = latest.Model,
-                recommendation = latest.Recommendation?.ToString(), priorityBand = latest.PriorityBand?.ToString(),
-                latest.Summary, latest.CreatedAt
-            },
-            isIllustration = opportunity.IsSynthetic,
-            note = opportunity.IsSynthetic
-                ? "This synthetic comparison illustrates behavior. It is not a benchmark or accuracy measurement."
-                : "The keyword baseline is a literal comparison aid, not a trained model or accuracy benchmark."
         });
     }
 
@@ -233,6 +222,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public async Task<IActionResult> ImportActiveProject(ActiveProjectImportRequest request, CancellationToken ct)
     {
         if (!TryActiveProjectSourceType(request.SourceType, out var sourceType)) return BadRequest(new { message = "Invalid source type." });
+        if (!ValidResearchConfidence(request.ResearchConfidence)) return BadRequest(new { message = "Research confidence must be Low, Medium, or High." });
         if (!ValidUrl(request.SourceUrl)) return BadRequest(new { message = "Source URL must be an absolute http or https URL." });
         var result = await importService.ImportActiveProjectAsync(request, sourceType, false, null, ct);
         return Ok(new { result.Id, result.Created, result.Updated, result.NearDuplicateOfId });
@@ -251,8 +241,11 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         catch (CsvImportException ex) { return BadRequest(new { message = ex.Message }); }
         if (rows.Any(x => x.Title.Length is < 1 or > 200 || x.Description.Length is < 20 or > 30000))
             return BadRequest(new { message = "Each row needs a title and a description between 20 and 30,000 characters." });
-        if (rows.Any(x => !ValidUrl(x.SourceUrl) || !TryActiveProjectSourceType(x.SourceType, out _)))
-            return BadRequest(new { message = "One or more rows has an invalid source_type or source_url." });
+        if (rows.Any(x => !WithinLength(x.SourceName, 200) || !WithinLength(x.SourceUrl, 1000)
+            || !WithinLength(x.ExternalId, 200) || !WithinLength(x.ResearchConfidenceReason, 500) || !WithinLength(x.ResearchAgent, 100)))
+            return BadRequest(new { message = "One or more rows has a source_name, source_url, external_id, research_confidence_reason, or research_agent that exceeds its maximum length." });
+        if (rows.Any(x => !ValidUrl(x.SourceUrl) || !TryActiveProjectSourceType(x.SourceType, out _) || !ValidResearchConfidence(x.ResearchConfidence)))
+            return BadRequest(new { message = "One or more rows has an invalid source_type, source_url, or research_confidence." });
 
         var imported = new List<object>();
         var updated = new List<object>();
@@ -271,6 +264,8 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     {
         if (!ValidUrl(request.WebsiteUrl)) return BadRequest(new { message = "Website URL must be an absolute http or https URL." });
         if (!ValidUrl(request.SourceUrl)) return BadRequest(new { message = "Source URL must be an absolute http or https URL." });
+        if (!ValidResearchConfidence(request.ResearchConfidence) || !ValidProspectType(request.ProspectType, request.Evidence))
+            return BadRequest(new { message = "Prospect type or research confidence is invalid." });
         var result = await importService.ImportBusinessProspectAsync(request, false, null, ct);
         return Ok(new { result.Id, result.Created, result.Updated, result.NearDuplicateOfId });
     }
@@ -288,8 +283,13 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         catch (CsvImportException ex) { return BadRequest(new { message = ex.Message }); }
         if (rows.Any(x => x.BusinessName.Length is < 1 or > 200 || x.Evidence.Length is < 20 or > 30000))
             return BadRequest(new { message = "Each row needs a business name and evidence between 20 and 30,000 characters." });
-        if (rows.Any(x => !ValidUrl(x.WebsiteUrl) || !ValidUrl(x.SourceUrl)))
-            return BadRequest(new { message = "One or more rows has an invalid website_url or source_url." });
+        if (rows.Any(x => !WithinLength(x.Geography, 200) || !WithinLength(x.Industry, 200) || !WithinLength(x.SourceName, 200)
+            || !WithinLength(x.WebsiteUrl, 1000) || !WithinLength(x.SourceUrl, 1000)
+            || !WithinLength(x.ExternalId, 200) || !WithinLength(x.ResearchConfidenceReason, 500) || !WithinLength(x.ResearchAgent, 100)))
+            return BadRequest(new { message = "One or more rows has a geography, industry, source_name, website_url, source_url, external_id, research_confidence_reason, or research_agent that exceeds its maximum length." });
+        if (rows.Any(x => !ValidUrl(x.WebsiteUrl) || !ValidUrl(x.SourceUrl)
+            || !ValidResearchConfidence(x.ResearchConfidence) || !ValidProspectType(x.ProspectType, x.Evidence)))
+            return BadRequest(new { message = "One or more rows has an invalid URL, prospect_type, or research_confidence." });
 
         var imported = new List<object>();
         var updated = new List<object>();
@@ -323,7 +323,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     [HttpPost("evaluation-preview")]
     public async Task<IActionResult> EvaluationPreview(EvaluationPreviewRequest request, CancellationToken ct)
     {
-        if (!TryProvider(request.Provider, out var provider)) return BadRequest(new { message = "Invalid evaluation provider." });
+        const EvaluationProvider provider = EvaluationProvider.Jev;
         var ids = request.OpportunityIds?.Distinct().ToArray() ?? [];
         if (ids.Length > 100) return BadRequest(new { message = "Evaluation batches are limited to 100 records." });
         var opportunities = await db.Opportunities.AsNoTracking().Include(x => x.ActiveProjectDetail).Include(x => x.BusinessProspectDetail)
@@ -333,7 +333,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         var evaluatorsByType = ResolveEvaluators(provider, opportunities);
         var estimatedTokens = opportunities.Sum(x => evaluatorsByType[x.EntityType].EstimateMaximumInputTokens(x, preferences));
         var inputPrice = configuration.GetValue("OpportunityRadar:JevInputPricePerMillionTokens", 0.042m);
-        var estimatedCost = provider == EvaluationProvider.Jev ? estimatedTokens / 1_000_000m * inputPrice : 0m;
+        var estimatedCost = estimatedTokens / 1_000_000m * inputPrice;
         var batchCap = configuration.GetValue("OpportunityRadar:JevMaximumEstimatedBatchCostUsd", 0.05m);
         var dailyLimit = configuration.GetValue("OpportunityRadar:JevDailyInputTokenLimit", 5_000_000);
         var usedToday = await db.OpportunityEvaluations.AsNoTracking()
@@ -359,7 +359,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     [HttpPost("evaluate")]
     public async Task<IActionResult> Evaluate(EvaluateRequest request, CancellationToken ct)
     {
-        if (!TryProvider(request.Provider, out var provider)) return BadRequest(new { message = "Invalid evaluation provider." });
+        const EvaluationProvider provider = EvaluationProvider.Jev;
         var ids = request.OpportunityIds?.Distinct().ToArray() ?? [];
         if (ids.Length > 100) return BadRequest(new { message = "Evaluation batches are limited to 100 records." });
         var opportunities = await db.Opportunities.Include(x => x.Evaluations)
@@ -371,11 +371,8 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         if (evaluatorsByType.Values.Any(x => !x.IsAvailable))
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "Live Jev evaluation is not configured." });
 
-        if (provider == EvaluationProvider.Jev)
-        {
-            var preview = await ValidateLiveBatch(opportunities, evaluatorsByType, preferences, request.ConfirmationCode, ct);
-            if (preview is not null) return preview;
-        }
+        var preview = await ValidateLiveBatch(opportunities, evaluatorsByType, preferences, request.ConfirmationCode, ct);
+        if (preview is not null) return preview;
 
         var outcomes = new ConcurrentBag<(Opportunity Opportunity, OpportunityEvaluationOutcome? Outcome, OpportunityEvaluationException? Error)>();
         await Parallel.ForEachAsync(opportunities, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, async (opportunity, token) =>
@@ -395,12 +392,11 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             else
             {
                 failed++;
-                var questionSetVersion = provider == EvaluationProvider.Jev
-                    ? (item.Opportunity.EntityType == OpportunityEntityType.ActiveProject ? JevActiveProjectEvaluator.QuestionSetVersion : JevBusinessProspectEvaluator.QuestionSetVersion)
-                    : "radar-v1";
+                var questionSetVersion = item.Opportunity.EntityType == OpportunityEntityType.ActiveProject
+                    ? JevActiveProjectEvaluator.QuestionSetVersion : JevBusinessProspectEvaluator.QuestionSetVersion;
                 item.Opportunity.Evaluations.Add(new OpportunityEvaluation
                 {
-                    Provider = provider, Status = EvaluationStatus.Failed, Model = provider == EvaluationProvider.Jev ? "jev-latest" : "simulation-v1",
+                    Provider = provider, Status = EvaluationStatus.Failed, Model = "jev-latest",
                     QuestionSetVersion = questionSetVersion,
                     ErrorMessage = item.Error?.Message ?? "Evaluation failed.", CreatedAt = DateTime.UtcNow
                 });
@@ -456,6 +452,28 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         return NoContent();
     }
 
+    [HttpPatch("{id:int}/prospect-type")]
+    public async Task<IActionResult> UpdateProspectType(int id, ProspectTypeOverrideRequest request, CancellationToken ct)
+    {
+        BusinessProspectType? value = null;
+        if (!string.IsNullOrWhiteSpace(request.ProspectType))
+        {
+            if (!Enum.TryParse<BusinessProspectType>(request.ProspectType.Replace(" ", ""), true, out var parsed) || !Enum.IsDefined(parsed))
+                return BadRequest(new { message = "Invalid prospect type." });
+            value = parsed;
+        }
+        var opportunity = await db.Opportunities.Include(x => x.BusinessProspectDetail).Include(x => x.Evaluations)
+            .SingleOrDefaultAsync(x => x.Id == id && x.EntityType == OpportunityEntityType.BusinessProspect, ct);
+        if (opportunity is null) return NotFound();
+        opportunity.BusinessProspectDetail!.ProspectTypeOverride = value;
+        opportunity.UpdatedAt = DateTime.UtcNow;
+        var latest = opportunity.Evaluations.OrderByDescending(x => x.CreatedAt).FirstOrDefault();
+        if (latest is { Provider: EvaluationProvider.Jev, Status: EvaluationStatus.Ready })
+            AppendRecomposition(opportunity, latest, await GetOrCreatePreferences(ct));
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpGet("preferences")]
     public async Task<IActionResult> GetPreferences(CancellationToken ct) => Ok(ToPreferencesResponse(await GetOrCreatePreferences(ct)));
 
@@ -463,29 +481,29 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public async Task<IActionResult> UpdatePreferences(PreferencesRequest request, CancellationToken ct)
     {
         if (request.ActiveProject.Capabilities.Length is < 1 or > 30 || request.ActiveProject.MinimumBudget < 0
-            || request.ActiveProject.MinimumWeeks < 1 || request.ActiveProject.MaximumWeeks < request.ActiveProject.MinimumWeeks
-            || request.ActiveProject.MaximumWeeks > 104
             || !Enum.TryParse<IncompleteInformationTolerance>(request.ActiveProject.IncompleteInformationTolerance, out _)
-            || !ValidActiveProjectWeights(request.ActiveProject.Weights)
-            || !ValidBusinessProspectWeights(request.BusinessProspect.Weights)
+            || !ValidWeights(request.ActiveProject.WeightsV2, OpportunityRadarV2.ActiveDefaults.Keys)
+            || !ValidWeights(request.BusinessProspect.OperationalPainWeights, OpportunityRadarV2.OperationalDefaults.Keys)
+            || !ValidWeights(request.BusinessProspect.DigitalPresenceWeights, OpportunityRadarV2.DigitalDefaults.Keys)
             || request.DigestActiveProjectCount is < 0 or > 25 || request.DigestBusinessProspectCount is < 0 or > 25)
             return BadRequest(new { message = "Invalid screening preferences." });
 
         var preferences = await GetOrCreatePreferences(ct);
         var oldActiveProjectPreferences = OpportunityRadarEngine.ReadActiveProjectPreferences(preferences);
-        var oldBusinessProspectPreferences = OpportunityRadarEngine.ReadBusinessProspectPreferences(preferences);
+        var oldActiveJson = preferences.ActiveProjectPreferencesJson;
+        var oldBusinessJson = preferences.BusinessProspectPreferencesJson;
         preferences.ActiveProjectPreferencesJson = JsonSerializer.Serialize(new
         {
             capabilities = request.ActiveProject.Capabilities.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase),
             preferredProjectTypes = request.ActiveProject.PreferredProjectTypes.Distinct(StringComparer.OrdinalIgnoreCase),
             excludedProjectTypes = request.ActiveProject.ExcludedProjectTypes.Distinct(StringComparer.OrdinalIgnoreCase),
-            minimumBudget = request.ActiveProject.MinimumBudget, minimumWeeks = request.ActiveProject.MinimumWeeks,
-            maximumWeeks = request.ActiveProject.MaximumWeeks, incompleteInformationTolerance = request.ActiveProject.IncompleteInformationTolerance,
-            weights = request.ActiveProject.Weights
+            minimumBudget = request.ActiveProject.MinimumBudget,
+            incompleteInformationTolerance = request.ActiveProject.IncompleteInformationTolerance,
+            weightsV2 = request.ActiveProject.WeightsV2
         });
         var newActiveProjectPreferences = OpportunityRadarEngine.ReadActiveProjectPreferences(preferences);
         var capabilitiesChanged = !SetsEqual(oldActiveProjectPreferences.Capabilities, newActiveProjectPreferences.Capabilities);
-        var activeProjectPreferencesChanged = !OpportunityRadarEngine.ActiveProjectPreferencesEqual(oldActiveProjectPreferences, newActiveProjectPreferences);
+        var activeProjectPreferencesChanged = oldActiveJson != preferences.ActiveProjectPreferencesJson;
 
         preferences.BusinessProspectPreferencesJson = JsonSerializer.Serialize(new
         {
@@ -493,73 +511,43 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             excludedIndustries = request.BusinessProspect.ExcludedIndustries.Distinct(StringComparer.OrdinalIgnoreCase),
             preferredGeographies = request.BusinessProspect.PreferredGeographies.Distinct(StringComparer.OrdinalIgnoreCase),
             excludedGeographies = request.BusinessProspect.ExcludedGeographies.Distinct(StringComparer.OrdinalIgnoreCase),
-            weights = request.BusinessProspect.Weights
+            operationalPainWeights = request.BusinessProspect.OperationalPainWeights,
+            digitalPresenceWeights = request.BusinessProspect.DigitalPresenceWeights
         });
-        var newBusinessProspectPreferences = OpportunityRadarEngine.ReadBusinessProspectPreferences(preferences);
-        var businessProspectPreferencesChanged = !OpportunityRadarEngine.BusinessProspectPreferencesEqual(oldBusinessProspectPreferences, newBusinessProspectPreferences);
+        var businessProspectPreferencesChanged = oldBusinessJson != preferences.BusinessProspectPreferencesJson;
         preferences.DigestActiveProjectCount = request.DigestActiveProjectCount;
         preferences.DigestBusinessProspectCount = request.DigestBusinessProspectCount;
         preferences.UpdatedAt = DateTime.UtcNow;
 
-        var opportunities = await db.Opportunities.Include(x => x.Evaluations)
-            .Include(x => x.ActiveProjectDetail).Include(x => x.BusinessProspectDetail).ToListAsync(ct);
+        // Only a Ready/Jev latest evaluation can ever be recomposed or made stale below, so filter to
+        // those opportunities in SQL first instead of materializing the entire table (and every
+        // evaluation row for every opportunity) on every preferences save.
+        var eligibleIds = await db.Opportunities.AsNoTracking()
+            .Select(x => new { x.Id, Latest = x.Evaluations.OrderByDescending(e => e.CreatedAt).Select(e => new { e.Provider, e.Status }).FirstOrDefault() })
+            .Where(x => x.Latest != null && x.Latest.Provider == EvaluationProvider.Jev && x.Latest.Status == EvaluationStatus.Ready)
+            .Select(x => x.Id).ToListAsync(ct);
+        // eligibleIds already pinned down which opportunity has a Ready/Jev latest evaluation, so this
+        // only needs to load that one row per opportunity (not the whole, ever-growing history) to append
+        // to via AppendRecomposition/AppendStale below.
+        var opportunities = await db.Opportunities.Include(x => x.Evaluations.OrderByDescending(e => e.CreatedAt).Take(1))
+            .Include(x => x.ActiveProjectDetail).Include(x => x.BusinessProspectDetail)
+            .Where(x => eligibleIds.Contains(x.Id)).ToListAsync(ct);
         foreach (var opportunity in opportunities)
         {
             var latest = opportunity.Evaluations.OrderByDescending(x => x.CreatedAt).FirstOrDefault();
-            if (latest is null)
-            {
-                AddSimulation(opportunity, preferences);
-                continue;
-            }
-            if (latest.Provider == EvaluationProvider.Simulated)
-            {
-                var relevantPreferencesChanged = opportunity.EntityType == OpportunityEntityType.ActiveProject
-                    ? activeProjectPreferencesChanged : businessProspectPreferencesChanged;
-                if (relevantPreferencesChanged) AddSimulation(opportunity, preferences);
-                continue;
-            }
-            if (latest.Status != EvaluationStatus.Ready) continue;
+            if (latest is null || latest.Provider != EvaluationProvider.Jev || latest.Status != EvaluationStatus.Ready) continue;
 
             // Only ActiveProject capability changes can make a live Jev result stale: capabilities feed
             // the ActiveProject Jev prompt (hsl_capabilities). Nothing in the BusinessProspect Jev prompt
             // is preference-derived, so BusinessProspect preference changes always recompose locally.
             if (opportunity.EntityType == OpportunityEntityType.ActiveProject && capabilitiesChanged)
             {
-                opportunity.Evaluations.Add(new OpportunityEvaluation
-                {
-                    Provider = EvaluationProvider.Jev, Status = EvaluationStatus.Stale, Model = latest.Model,
-                    QuestionSetVersion = latest.QuestionSetVersion, AssessmentJson = latest.AssessmentJson,
-                    ProviderResponseJson = latest.ProviderResponseJson, ResultJson = latest.ResultJson,
-                    Summary = "Capability preferences changed. Run Jev again before relying on this evaluation.",
-                    NextStep = "Reevaluate with Jev.", BudgetStatus = latest.BudgetStatus, CreatedAt = DateTime.UtcNow
-                });
+                AppendStale(opportunity, latest, "Capability preferences changed. Run Jev again before relying on this evaluation.");
                 continue;
             }
-
-            RadarResult? result = null;
-            if (opportunity.EntityType == OpportunityEntityType.ActiveProject)
-            {
-                var assessment = OpportunityRadarEngine.DeserializeActiveProjectAssessment(latest.AssessmentJson);
-                if (assessment is not null)
-                    result = OpportunityRadarEngine.ComposeActiveProject(opportunity, preferences, assessment,
-                        ["This recommendation was rescored locally from stored Jev judgments. Jev was not called again."]);
-            }
-            else
-            {
-                var assessment = OpportunityRadarEngine.DeserializeBusinessProspectAssessment(latest.AssessmentJson);
-                if (assessment is not null)
-                    result = OpportunityRadarEngine.ComposeBusinessProspect(opportunity, preferences, assessment,
-                        ["This recommendation was rescored locally from stored Jev judgments. Jev was not called again."]);
-            }
-            if (result is null) continue;
-            opportunity.Evaluations.Add(new OpportunityEvaluation
-            {
-                Provider = EvaluationProvider.Jev, Status = EvaluationStatus.Ready, Model = latest.Model,
-                QuestionSetVersion = latest.QuestionSetVersion, AssessmentJson = latest.AssessmentJson,
-                ProviderResponseJson = latest.ProviderResponseJson, ResultJson = OpportunityRadarEngine.Serialize(result),
-                Recommendation = result.Recommendation, PriorityBand = result.PriorityBand, BudgetStatus = result.BudgetStatus,
-                Summary = result.Summary, NextStep = result.NextStep, CreatedAt = DateTime.UtcNow
-            });
+            var relevantChanged = opportunity.EntityType == OpportunityEntityType.ActiveProject
+                ? activeProjectPreferencesChanged : businessProspectPreferencesChanged;
+            if (relevantChanged) AppendRecomposition(opportunity, latest, preferences);
         }
         await db.SaveChangesAsync(ct);
         return Ok(ToPreferencesResponse(preferences));
@@ -587,11 +575,11 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             .Where(x => includeSynthetic || !x.IsSynthetic).ToListAsync(ct);
 
         var activeProjects = opportunities.Where(x => x.EntityType == OpportunityEntityType.ActiveProject).Select(ToSummary)
-            .Where(x => x.Recommendation == OpportunityRecommendation.Pursue.ToString() && x.EvaluationStatus == EvaluationStatus.Ready.ToString() && x.UserDecision is null)
-            .OrderBy(x => PriorityOrder(x.PriorityBand)).ThenByDescending(x => x.CreatedAt).Take(preferences.DigestActiveProjectCount).ToList();
+            .Where(x => x.Recommendation == OpportunityRecommendation.Pursue.ToString() && x.EvaluationStatus == EvaluationStatus.Ready.ToString() && x.UserDecision is null && !x.NeedsVerification)
+            .OrderByDescending(x => x.OpportunityScore).ThenByDescending(x => x.JevConfidence).ThenByDescending(x => x.CreatedAt).Take(preferences.DigestActiveProjectCount).ToList();
         var businessProspects = opportunities.Where(x => x.EntityType == OpportunityEntityType.BusinessProspect).Select(ToSummary)
-            .Where(x => x.Recommendation == OpportunityRecommendation.Prioritize.ToString() && x.EvaluationStatus == EvaluationStatus.Ready.ToString() && x.UserDecision is null)
-            .OrderBy(x => PriorityOrder(x.PriorityBand)).ThenByDescending(x => x.CreatedAt).Take(preferences.DigestBusinessProspectCount).ToList();
+            .Where(x => x.Recommendation == OpportunityRecommendation.Prioritize.ToString() && x.EvaluationStatus == EvaluationStatus.Ready.ToString() && x.UserDecision is null && !x.NeedsVerification)
+            .OrderByDescending(x => x.OpportunityScore).ThenByDescending(x => x.JevConfidence).ThenByDescending(x => x.CreatedAt).Take(preferences.DigestBusinessProspectCount).ToList();
 
         return Ok(new
         {
@@ -617,14 +605,15 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 capabilities = new[] { ".NET", "C#", "React", "TypeScript", "SQL", "PostgreSQL", "REST APIs", "AWS" },
                 preferredProjectTypes = new[] { "Integration", "Automation", "InternalTool", "Reporting", "Portal", "ExistingSoftware" },
                 excludedProjectTypes = new[] { "FullTimeEmployment", "EquityOnly", "Unpaid" },
-                minimumBudget = 2500m, minimumWeeks = 2, maximumWeeks = 12, incompleteInformationTolerance = "Medium",
-                weights = new { capabilityFit = 35, problemClarity = 30, independentScope = 20, informationSufficiency = 15 }
+                minimumBudget = 2500m, incompleteInformationTolerance = "Medium",
+                weightsV2 = OpportunityRadarV2.ActiveDefaults
             }),
             BusinessProspectPreferencesJson = JsonSerializer.Serialize(new
             {
                 preferredIndustries = Array.Empty<string>(), excludedIndustries = Array.Empty<string>(),
                 preferredGeographies = Array.Empty<string>(), excludedGeographies = Array.Empty<string>(),
-                weights = new { businessStrength = 15, digitalPresenceWeakness = 25, reputationMismatch = 15, entryProjectStrength = 20, geography = 5, contactability = 10, evidenceCompleteness = 10 }
+                operationalPainWeights = OpportunityRadarV2.OperationalDefaults,
+                digitalPresenceWeights = OpportunityRadarV2.DigitalDefaults
             }),
             DigestActiveProjectCount = 3, DigestBusinessProspectCount = 2,
             UpdatedAt = DateTime.UtcNow
@@ -643,70 +632,94 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             activeProject = new
             {
                 activeProject.Capabilities, activeProject.PreferredProjectTypes, activeProject.ExcludedProjectTypes,
-                activeProject.MinimumBudget, activeProject.MinimumWeeks, activeProject.MaximumWeeks,
+                activeProject.MinimumBudget,
                 incompleteInformationTolerance = activeProject.IncompleteInformationTolerance.ToString(),
-                weights = new
-                {
-                    capabilityFit = activeProject.Weights.CapabilityFit, problemClarity = activeProject.Weights.ProblemClarity,
-                    independentScope = activeProject.Weights.IndependentScope, informationSufficiency = activeProject.Weights.InformationSufficiency
-                }
+                weightsV2 = OpportunityRadarV2.ReadActiveWeights(value)
             },
             businessProspect = new
             {
                 businessProspect.PreferredIndustries, businessProspect.ExcludedIndustries,
                 businessProspect.PreferredGeographies, businessProspect.ExcludedGeographies,
-                weights = new
-                {
-                    businessStrength = businessProspect.Weights.BusinessStrength, digitalPresenceWeakness = businessProspect.Weights.DigitalPresenceWeakness,
-                    reputationMismatch = businessProspect.Weights.ReputationMismatch, entryProjectStrength = businessProspect.Weights.EntryProjectStrength,
-                    geography = businessProspect.Weights.Geography, contactability = businessProspect.Weights.Contactability,
-                    evidenceCompleteness = businessProspect.Weights.EvidenceCompleteness
-                }
+                operationalPainWeights = OpportunityRadarV2.ReadOperationalWeights(value),
+                digitalPresenceWeights = OpportunityRadarV2.ReadDigitalWeights(value)
             },
             digestActiveProjectCount = value.DigestActiveProjectCount, digestBusinessProspectCount = value.DigestBusinessProspectCount,
             value.UpdatedAt
         };
     }
 
-    private static void AddSimulation(Opportunity opportunity, RadarPreferences preferences)
-    {
-        RadarResult result;
-        string assessmentJson;
-        if (opportunity.EntityType == OpportunityEntityType.ActiveProject)
-        {
-            var (r, assessment) = OpportunityRadarEngine.EvaluateActiveProject(opportunity, preferences);
-            result = r; assessmentJson = OpportunityRadarEngine.Serialize(assessment);
-        }
-        else
-        {
-            var (r, assessment) = OpportunityRadarEngine.EvaluateBusinessProspect(opportunity, preferences);
-            result = r; assessmentJson = OpportunityRadarEngine.Serialize(assessment);
-        }
-        opportunity.Evaluations.Add(new OpportunityEvaluation
-        {
-            Provider = EvaluationProvider.Simulated, Status = EvaluationStatus.Ready, Recommendation = result.Recommendation,
-            PriorityBand = result.PriorityBand, BudgetStatus = result.BudgetStatus, AssessmentJson = assessmentJson,
-            ResultJson = OpportunityRadarEngine.Serialize(result),
-            Summary = result.Summary, NextStep = result.NextStep, CreatedAt = DateTime.UtcNow
-        });
-        opportunity.UpdatedAt = DateTime.UtcNow;
-    }
-
     private static OpportunityEvaluation ToEvaluation(OpportunityEvaluationOutcome outcome, OpportunityEntityType entityType) => new()
     {
         Provider = outcome.Provider, Status = EvaluationStatus.Ready, Model = outcome.Model,
+        // The ": radar-v1" branch is unreachable today - only Jev evaluators are registered (see
+        // Program.cs) - but EvaluationProvider.Simulated still exists so historical rows deserialize
+        // correctly. Left in place rather than removed so a future Simulated-provider evaluator (if one
+        // is ever reintroduced) doesn't silently fall through with no QuestionSetVersion.
         QuestionSetVersion = outcome.Provider == EvaluationProvider.Jev
             ? (entityType == OpportunityEntityType.ActiveProject ? JevActiveProjectEvaluator.QuestionSetVersion : JevBusinessProspectEvaluator.QuestionSetVersion)
             : "radar-v1",
         Recommendation = outcome.Result.Recommendation, PriorityBand = outcome.Result.PriorityBand,
+        OpportunityScore = outcome.Result.OpportunityScore, JevConfidence = outcome.Result.JevConfidence,
+        EvaluatedProspectType = outcome.Result.ProspectType, NeedsVerification = outcome.Result.NeedsVerification,
+        RubricVersion = outcome.Result.RubricVersion, Origin = EvaluationOrigin.ProviderRun,
+        EffectiveWeightsJson = JsonSerializer.Serialize(outcome.Result.EffectiveWeights ?? new Dictionary<string, decimal>()),
         BudgetStatus = outcome.Result.BudgetStatus, AssessmentJson = outcome.AssessmentJson,
         ResultJson = OpportunityRadarEngine.Serialize(outcome.Result), ProviderResponseJson = outcome.ProviderResponseJson,
         Summary = outcome.Result.Summary, NextStep = outcome.Result.NextStep, InputTokens = outcome.InputTokens,
         OutputTokens = outcome.OutputTokens, CreatedAt = DateTime.UtcNow
     };
 
-    private static bool TryProvider(string value, out EvaluationProvider provider) =>
-        Enum.TryParse(value, true, out provider) && Enum.IsDefined(provider);
+    private static void AppendRecomposition(Opportunity opportunity, OpportunityEvaluation latest, RadarPreferences preferences)
+    {
+        RadarResult? result = null;
+        if (opportunity.EntityType == OpportunityEntityType.ActiveProject)
+        {
+            var assessment = OpportunityRadarV2.DeserializeActive(latest.AssessmentJson);
+            if (assessment is not null) result = OpportunityRadarV2.ComposeActiveProject(opportunity, preferences, assessment);
+        }
+        else
+        {
+            var assessment = OpportunityRadarV2.DeserializeBusiness(latest.AssessmentJson);
+            if (assessment is not null) result = OpportunityRadarV2.ComposeBusinessProspect(opportunity, preferences, assessment);
+        }
+        if (result is null) return;
+        opportunity.Evaluations.Add(new OpportunityEvaluation
+        {
+            Provider = EvaluationProvider.Jev, Status = EvaluationStatus.Ready, Model = latest.Model,
+            QuestionSetVersion = latest.QuestionSetVersion, AssessmentJson = latest.AssessmentJson,
+            ProviderResponseJson = latest.ProviderResponseJson, ResultJson = OpportunityRadarEngine.Serialize(result),
+            Recommendation = result.Recommendation, PriorityBand = result.PriorityBand, BudgetStatus = result.BudgetStatus,
+            OpportunityScore = result.OpportunityScore, JevConfidence = result.JevConfidence,
+            EvaluatedProspectType = result.ProspectType, NeedsVerification = result.NeedsVerification,
+            RubricVersion = result.RubricVersion, Origin = EvaluationOrigin.LocalRecompose,
+            SourceEvaluationId = ResolveSourceEvaluationId(latest),
+            EffectiveWeightsJson = JsonSerializer.Serialize(result.EffectiveWeights ?? new Dictionary<string, decimal>()),
+            Summary = result.Summary, NextStep = result.NextStep, InputTokens = latest.InputTokens,
+            OutputTokens = latest.OutputTokens, CreatedAt = DateTime.UtcNow
+        });
+        opportunity.UpdatedAt = DateTime.UtcNow;
+    }
+
+    private static void AppendStale(Opportunity opportunity, OpportunityEvaluation latest, string summary)
+    {
+        opportunity.Evaluations.Add(new OpportunityEvaluation
+        {
+            Provider = latest.Provider, Status = EvaluationStatus.Stale, Model = latest.Model,
+            QuestionSetVersion = latest.QuestionSetVersion, AssessmentJson = latest.AssessmentJson,
+            ProviderResponseJson = latest.ProviderResponseJson, ResultJson = latest.ResultJson,
+            Recommendation = latest.Recommendation, PriorityBand = latest.PriorityBand, BudgetStatus = latest.BudgetStatus,
+            OpportunityScore = latest.OpportunityScore, JevConfidence = latest.JevConfidence,
+            EvaluatedProspectType = latest.EvaluatedProspectType, NeedsVerification = true,
+            RubricVersion = latest.RubricVersion, Origin = latest.Origin, SourceEvaluationId = ResolveSourceEvaluationId(latest),
+            EffectiveWeightsJson = latest.EffectiveWeightsJson, Summary = summary, NextStep = "Reevaluate with Jev.",
+            CreatedAt = DateTime.UtcNow
+        });
+    }
+
+    // A row derived from a ProviderRun (recomposed locally, or marked stale) should always trace back to
+    // that run; a row derived from an already-derived row just carries the link forward.
+    private static int? ResolveSourceEvaluationId(OpportunityEvaluation latest) =>
+        latest.Origin == EvaluationOrigin.ProviderRun ? latest.Id : latest.SourceEvaluationId;
 
     private async Task<IActionResult?> ValidateLiveBatch(IReadOnlyList<Opportunity> opportunities,
         Dictionary<OpportunityEntityType, IOpportunityEvaluator> evaluatorsByType, RadarPreferences preferences,
@@ -740,20 +753,12 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     private static bool SetsEqual(IEnumerable<string> left, IEnumerable<string> right) =>
         left.Order(StringComparer.OrdinalIgnoreCase).SequenceEqual(right.Order(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
 
-    private static bool ValidActiveProjectWeights(Dictionary<string, int>? weights)
+    private static bool ValidWeights(Dictionary<string, decimal>? weights, IEnumerable<string> requiredKeys)
     {
         if (weights is null) return true;
-        var required = new[] { "capabilityFit", "problemClarity", "independentScope", "informationSufficiency" };
+        var required = requiredKeys.ToArray();
         return weights.Count == required.Length && required.All(weights.ContainsKey)
-            && weights.Values.All(x => x is >= 0 and <= 100) && weights.Values.Sum() > 0;
-    }
-
-    private static bool ValidBusinessProspectWeights(Dictionary<string, int>? weights)
-    {
-        if (weights is null) return true;
-        var required = new[] { "businessStrength", "digitalPresenceWeakness", "reputationMismatch", "entryProjectStrength", "geography", "contactability", "evidenceCompleteness" };
-        return weights.Count == required.Length && required.All(weights.ContainsKey)
-            && weights.Values.All(x => x is >= 0 and <= 100) && weights.Values.Sum() > 0;
+            && weights.Values.All(x => x is >= 0 and <= 100);
     }
 
     private static SummaryRow ToSummary(Opportunity opportunity)
@@ -770,16 +775,25 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             opportunity.DuplicateOfId, opportunity.IsSynthetic, opportunity.CreatedAt,
             isActiveProject ? null : opportunity.BusinessProspectDetail?.Industry,
             isActiveProject ? null : opportunity.BusinessProspectDetail?.Geography,
-            isActiveProject ? null : opportunity.BusinessProspectDetail?.NormalizedWebsiteDomain);
+            isActiveProject ? null : opportunity.BusinessProspectDetail?.NormalizedWebsiteDomain,
+            evaluation?.OpportunityScore, evaluation?.JevConfidence,
+            isActiveProject ? null : (opportunity.BusinessProspectDetail?.ProspectTypeOverride ?? evaluation?.EvaluatedProspectType
+                ?? opportunity.BusinessProspectDetail?.ImportedProspectType)?.ToString(), evaluation?.NeedsVerification ?? false);
     }
 
     private sealed record SummaryRow(int Id, string EntityType, string Title, string Preview, string? SourceType, string? Recommendation,
         string? PriorityBand, string? BudgetStatus, string? Summary, string? EvaluationStatus, string? EvaluationProvider,
-        string? UserDecision, int? DuplicateOfId, bool IsSynthetic, DateTime CreatedAt, string? Industry, string? Geography, string? WebsiteDomain);
+        string? UserDecision, int? DuplicateOfId, bool IsSynthetic, DateTime CreatedAt, string? Industry, string? Geography, string? WebsiteDomain,
+        decimal? OpportunityScore, decimal? JevConfidence, string? ProspectType, bool NeedsVerification);
 
     private static int PriorityOrder(string? value) => value switch { "High" => 0, "Medium" => 1, "Low" => 2, _ => 3 };
     private static bool ValidUrl(string? value) => string.IsNullOrWhiteSpace(value)
         || Uri.TryCreate(value, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    // CSV rows are built by hand in OpportunityCsvImportService, not via model binding, so the
+    // [StringLength] attributes on ActiveProjectImportRequest/BusinessProspectImportRequest (which the
+    // single-record JSON import gets enforced for free) are otherwise never checked for a CSV import,
+    // and an over-length optional field would fail at the database instead of with a clean 400.
+    private static bool WithinLength(string? value, int max) => value is null || value.Length <= max;
     private static bool TryActiveProjectSourceType(string value, out ActiveProjectSourceType sourceType) =>
         Enum.TryParse(value.Replace("_", "", StringComparison.Ordinal), true, out sourceType) && Enum.IsDefined(sourceType);
     private static bool TryEntityTypeFilter(string value, out OpportunityEntityType? entityType)
@@ -788,6 +802,18 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         if (value.Equals("All", StringComparison.OrdinalIgnoreCase)) return true;
         if (Enum.TryParse<OpportunityEntityType>(value, true, out var parsed)) { entityType = parsed; return true; }
         return false;
+    }
+
+    private static bool ValidResearchConfidence(string? value)
+    {
+        try { _ = OpportunityImportService.ParseResearchConfidence(value); return true; }
+        catch (ArgumentException) { return false; }
+    }
+
+    private static bool ValidProspectType(string? value, string evidence)
+    {
+        try { _ = OpportunityImportService.ParseProspectType(value, evidence); return true; }
+        catch (ArgumentException) { return false; }
     }
 
     private static IReadOnlyList<(string Key, ActiveProjectSourceType SourceType, ActiveProjectImportRequest Request)> ActiveProjectSamples() =>
