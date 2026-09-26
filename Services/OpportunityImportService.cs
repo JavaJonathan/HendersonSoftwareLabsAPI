@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using HendersonSoftwareLabsAPI.Data;
 using HendersonSoftwareLabsAPI.Entities;
@@ -7,32 +6,57 @@ using Microsoft.EntityFrameworkCore;
 
 namespace HendersonSoftwareLabsAPI.Services;
 
+public record EvidenceFact(
+    [Required, StringLength(2000, MinimumLength = 1)] string Fact,
+    [StringLength(1000)] string? Source,
+    DateTime? Date);
+
+public record CompetitionInfo(
+    [StringLength(100)] string? Proposals,
+    [Range(0, int.MaxValue)] int? Interviewing,
+    [Range(0, int.MaxValue)] int? Hires);
+
+public record ConfidenceInfo(
+    [Required, StringLength(20, MinimumLength = 1)] string Level,
+    [StringLength(500)] string? Reason);
+
 public record ActiveProjectImportRequest(
     [Required, StringLength(200)] string Title,
-    [Required, StringLength(30000, MinimumLength = 20)] string Description,
+    [Required, StringLength(4000, MinimumLength = 20)] string Request,
     string SourceType = "ExplicitDemand",
     [StringLength(200)] string? SourceName = null,
     [StringLength(1000)] string? SourceUrl = null,
     DateTime? SourceDate = null,
     [StringLength(200)] string? ExternalId = null,
-    string? ResearchConfidence = null,
-    [StringLength(500)] string? ResearchConfidenceReason = null,
+    [StringLength(100)] string? Budget = null,
+    CompetitionInfo? Competition = null,
+    [StringLength(1000)] string? Fit = null,
+    [StringLength(1000)] string? ProposalAngle = null,
+    [StringLength(1000)] string? Risk = null,
+    ConfidenceInfo? Confidence = null,
     [StringLength(100)] string? ResearchAgent = null);
 
 public record BusinessProspectImportRequest(
     [Required, StringLength(200)] string BusinessName,
-    [Required, StringLength(30000, MinimumLength = 20)] string Evidence,
+    [Required, MinLength(1), MaxLength(30)] IReadOnlyList<EvidenceFact> Evidence,
     [StringLength(1000)] string? WebsiteUrl = null,
     [StringLength(200)] string? Geography = null,
     [StringLength(200)] string? Industry = null,
-    [StringLength(200)] string? SourceName = null,
-    [StringLength(1000)] string? SourceUrl = null,
-    DateTime? SourceDate = null,
     [StringLength(200)] string? ExternalId = null,
     string? ProspectType = null,
-    string? ResearchConfidence = null,
-    [StringLength(500)] string? ResearchConfidenceReason = null,
-    [StringLength(100)] string? ResearchAgent = null);
+    [StringLength(1000)] string? Fit = null,
+    [StringLength(1000)] string? EntryOffer = null,
+    [StringLength(1000)] string? Risk = null,
+    ConfidenceInfo? Confidence = null,
+    [StringLength(100)] string? ResearchAgent = null) : IValidatableObject
+{
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        var total = Evidence?.Sum(x => x.Fact?.Length ?? 0) ?? 0;
+        if (total is < 20 or > 30000)
+            yield return new ValidationResult("Combined evidence must be between 20 and 30,000 characters.", [nameof(Evidence)]);
+    }
+}
 
 public record OpportunityImportResult(int Id, bool Created, bool Updated, int? NearDuplicateOfId);
 
@@ -48,7 +72,7 @@ public interface IOpportunityImportService
 // touch UserDecision/Notes/DuplicateOfId/IsSynthetic. This is what makes CSV resubmission safe: an
 // agent can re-run the same research and re-export a CSV without duplicating rows or clobbering a
 // decision a human already made.
-public sealed partial class OpportunityImportService(ApplicationDbContext db) : IOpportunityImportService
+public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportunityImportService
 {
     public static ResearchConfidence? ParseResearchConfidence(string? value)
     {
@@ -57,13 +81,10 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
             ? parsed : throw new ArgumentException("Research confidence must be Low, Medium, or High.");
     }
 
-    public static BusinessProspectType? ParseProspectType(string? value, string evidence)
+    public static BusinessProspectType? ParseProspectType(string? value)
     {
-        var candidate = value;
-        if (string.IsNullOrWhiteSpace(candidate))
-            candidate = ProspectTypePrefixRegex().Match(evidence).Groups[1].Value;
-        if (string.IsNullOrWhiteSpace(candidate)) return null;
-        var normalized = Regex.Replace(candidate.Trim(), @"[\s_-]+", "");
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = Regex.Replace(value.Trim(), @"[\s_-]+", "");
         return Enum.TryParse<BusinessProspectType>(normalized, true, out var parsed) && Enum.IsDefined(parsed)
             ? parsed : throw new ArgumentException("Prospect type must be OperationalPain, DigitalPresence, Hybrid, or Unknown.");
     }
@@ -71,8 +92,10 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
     public async Task<OpportunityImportResult> ImportActiveProjectAsync(ActiveProjectImportRequest request,
         ActiveProjectSourceType sourceType, bool synthetic, string? syntheticKey, CancellationToken ct)
     {
-        var fingerprint = OpportunityRadarEngine.Fingerprint(request.Title, request.Description, request.SourceUrl);
-        var researchConfidence = ParseResearchConfidence(request.ResearchConfidence);
+        var description = OpportunityRadarEngine.ComposeActiveProjectDescription(request);
+        var passages = OpportunityRadarEngine.BuildActiveProjectPassages(request.Request, request.Budget, request.Competition);
+        var fingerprint = OpportunityRadarEngine.Fingerprint(request.Title, description, request.SourceUrl);
+        var researchConfidence = ParseResearchConfidence(request.Confidence?.Level);
         var trimmedExternalId = request.ExternalId?.Trim();
         Opportunity? existing = null;
         if (!string.IsNullOrEmpty(trimmedExternalId))
@@ -86,17 +109,24 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
         if (existing is not null)
         {
             existing.Title = request.Title.Trim();
-            existing.Description = request.Description.Trim();
-            existing.SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.Segment(request.Description));
+            existing.Description = description;
+            existing.SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages);
             existing.SourceName = request.SourceName?.Trim();
             existing.SourceUrl = request.SourceUrl?.Trim();
             existing.SourceDate = request.SourceDate?.ToUniversalTime();
             existing.ExternalId = trimmedExternalId;
             existing.ResearchConfidence = researchConfidence;
-            existing.ResearchConfidenceReason = request.ResearchConfidenceReason?.Trim();
+            existing.ResearchConfidenceReason = request.Confidence?.Reason?.Trim();
             existing.ResearchAgent = request.ResearchAgent?.Trim();
-            existing.Fingerprint = OpportunityRadarEngine.Fingerprint(request.Title, request.Description, request.SourceUrl);
+            existing.Fingerprint = fingerprint;
             existing.UpdatedAt = now;
+            existing.ActiveProjectDetail!.Budget = request.Budget?.Trim();
+            existing.ActiveProjectDetail!.CompetitionProposals = request.Competition?.Proposals?.Trim();
+            existing.ActiveProjectDetail!.CompetitionInterviewing = request.Competition?.Interviewing;
+            existing.ActiveProjectDetail!.CompetitionHires = request.Competition?.Hires;
+            existing.ActiveProjectDetail!.Fit = request.Fit?.Trim();
+            existing.ActiveProjectDetail!.ProposalAngle = request.ProposalAngle?.Trim();
+            existing.ActiveProjectDetail!.Risk = request.Risk?.Trim();
             AddStaleEvaluationIfReady(existing);
             await db.SaveChangesAsync(ct);
             return new OpportunityImportResult(existing.Id, false, true, existing.DuplicateOfId);
@@ -104,19 +134,25 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
 
         var candidates = await db.Opportunities.AsNoTracking().Where(x => x.EntityType == OpportunityEntityType.ActiveProject)
             .Select(x => new { x.Id, x.Title, x.Description }).ToListAsync(ct);
-        var near = candidates.Select(x => new { x.Id, Similarity = OpportunityRadarEngine.Similarity($"{request.Title} {request.Description}", $"{x.Title} {x.Description}") })
+        var near = candidates.Select(x => new { x.Id, Similarity = OpportunityRadarEngine.Similarity($"{request.Title} {description}", $"{x.Title} {x.Description}") })
             .Where(x => x.Similarity >= 0.62).OrderByDescending(x => x.Similarity).FirstOrDefault();
 
         var opportunity = new Opportunity
         {
             EntityType = OpportunityEntityType.ActiveProject,
-            Title = request.Title.Trim(), Description = request.Description.Trim(),
+            Title = request.Title.Trim(), Description = description,
             SourceName = request.SourceName?.Trim(), SourceUrl = request.SourceUrl?.Trim(), SourceDate = request.SourceDate?.ToUniversalTime(),
-            ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.Segment(request.Description)),
-            ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.ResearchConfidenceReason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
+            ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages),
+            ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
             Fingerprint = fingerprint, DuplicateOfId = near?.Id, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
             CreatedAt = now, UpdatedAt = now,
-            ActiveProjectDetail = new ActiveProjectDetail { DeclaredSourceType = sourceType }
+            ActiveProjectDetail = new ActiveProjectDetail
+            {
+                DeclaredSourceType = sourceType,
+                Budget = request.Budget?.Trim(), CompetitionProposals = request.Competition?.Proposals?.Trim(),
+                CompetitionInterviewing = request.Competition?.Interviewing, CompetitionHires = request.Competition?.Hires,
+                Fit = request.Fit?.Trim(), ProposalAngle = request.ProposalAngle?.Trim(), Risk = request.Risk?.Trim()
+            }
         };
         db.Opportunities.Add(opportunity);
         await db.SaveChangesAsync(ct);
@@ -126,9 +162,12 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
     public async Task<OpportunityImportResult> ImportBusinessProspectAsync(BusinessProspectImportRequest request,
         bool synthetic, string? syntheticKey, CancellationToken ct)
     {
+        var description = OpportunityRadarEngine.ComposeBusinessProspectDescription(request);
+        var passages = OpportunityRadarEngine.BuildBusinessProspectPassages(request.Evidence);
+        var derivedSourceDate = request.Evidence.Where(x => x.Date.HasValue).Select(x => x.Date!.Value.ToUniversalTime()).DefaultIfEmpty(DateTime.MinValue).Max();
         var normalizedName = OpportunityRadarEngine.NormalizeBusinessName(request.BusinessName);
-        var prospectType = ParseProspectType(request.ProspectType, request.Evidence);
-        var researchConfidence = ParseResearchConfidence(request.ResearchConfidence);
+        var prospectType = ParseProspectType(request.ProspectType);
+        var researchConfidence = ParseResearchConfidence(request.Confidence?.Level);
         var normalizedDomain = OpportunityRadarEngine.NormalizeWebsiteDomain(request.WebsiteUrl);
         var trimmedExternalId = request.ExternalId?.Trim();
         var now = DateTime.UtcNow;
@@ -150,26 +189,26 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
         if (existing is not null)
         {
             existing.Title = request.BusinessName.Trim();
-            existing.Description = request.Evidence.Trim();
-            existing.SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.Segment(request.Evidence));
-            existing.SourceName = request.SourceName?.Trim();
-            existing.SourceUrl = request.SourceUrl?.Trim();
-            existing.SourceDate = request.SourceDate?.ToUniversalTime();
+            existing.Description = description;
+            existing.SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages);
+            existing.SourceDate = derivedSourceDate == DateTime.MinValue ? null : derivedSourceDate;
             existing.ExternalId = trimmedExternalId;
             existing.ResearchConfidence = researchConfidence;
-            existing.ResearchConfidenceReason = request.ResearchConfidenceReason?.Trim();
+            existing.ResearchConfidenceReason = request.Confidence?.Reason?.Trim();
             existing.ResearchAgent = request.ResearchAgent?.Trim();
             existing.UpdatedAt = now;
             existing.BusinessProspectDetail!.WebsiteUrl = request.WebsiteUrl?.Trim();
             existing.BusinessProspectDetail!.NormalizedWebsiteDomain = normalizedDomain;
             existing.BusinessProspectDetail!.Geography = request.Geography?.Trim();
             existing.BusinessProspectDetail!.Industry = request.Industry?.Trim();
-            // A reimport that omits prospect_type (no explicit value and no "Prospect type: X" line in the
-            // new evidence) must not clobber a classification a prior import already recorded - only a
-            // freshly supplied type overwrites the stored one, matching the "never touch agent-recorded
-            // data" contract this class's own doc comment promises.
+            // A reimport that omits prospect_type must not clobber a classification a prior import
+            // already recorded - only a freshly supplied type overwrites the stored one, matching the
+            // "never touch agent-recorded data" contract this class's own doc comment promises.
             if (prospectType is not null) existing.BusinessProspectDetail!.ImportedProspectType = prospectType;
             existing.BusinessProspectDetail!.NormalizedBusinessName = normalizedName;
+            existing.BusinessProspectDetail!.Fit = request.Fit?.Trim();
+            existing.BusinessProspectDetail!.EntryOffer = request.EntryOffer?.Trim();
+            existing.BusinessProspectDetail!.Risk = request.Risk?.Trim();
             AddStaleEvaluationIfReady(existing);
             await db.SaveChangesAsync(ct);
             return new OpportunityImportResult(existing.Id, false, true, existing.DuplicateOfId);
@@ -183,16 +222,17 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
         var opportunity = new Opportunity
         {
             EntityType = OpportunityEntityType.BusinessProspect,
-            Title = request.BusinessName.Trim(), Description = request.Evidence.Trim(),
-            SourceName = request.SourceName?.Trim(), SourceUrl = request.SourceUrl?.Trim(), SourceDate = request.SourceDate?.ToUniversalTime(),
-            ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.Segment(request.Evidence)),
-            ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.ResearchConfidenceReason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
+            Title = request.BusinessName.Trim(), Description = description,
+            SourceDate = derivedSourceDate == DateTime.MinValue ? null : derivedSourceDate,
+            ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages),
+            ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
             Fingerprint = "", DuplicateOfId = near?.Id, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
             CreatedAt = now, UpdatedAt = now,
             BusinessProspectDetail = new BusinessProspectDetail
             {
                 NormalizedBusinessName = normalizedName, WebsiteUrl = request.WebsiteUrl?.Trim(), NormalizedWebsiteDomain = normalizedDomain,
-                Geography = request.Geography?.Trim(), Industry = request.Industry?.Trim(), ImportedProspectType = prospectType
+                Geography = request.Geography?.Trim(), Industry = request.Industry?.Trim(), ImportedProspectType = prospectType,
+                Fit = request.Fit?.Trim(), EntryOffer = request.EntryOffer?.Trim(), Risk = request.Risk?.Trim()
             }
         };
         db.Opportunities.Add(opportunity);
@@ -222,7 +262,4 @@ public sealed partial class OpportunityImportService(ApplicationDbContext db) : 
             NextStep = "Reevaluate.", CreatedAt = DateTime.UtcNow
         });
     }
-
-    [GeneratedRegex(@"(?im)^\s*Prospect\s+type\s*:\s*(Operational\s*Pain|Digital\s*Presence|Hybrid|Unknown)\s*\.?\s*$")]
-    private static partial Regex ProspectTypePrefixRegex();
 }

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -35,21 +36,21 @@ RadarPreferences MakePreferences(
     DigestBusinessProspectCount = 2
 };
 
-Opportunity MakeActiveProject(string title, string description) => new()
+Opportunity MakeActiveProject(string title, string request, string? budget = null) => new()
 {
     EntityType = OpportunityEntityType.ActiveProject,
     Title = title,
-    Description = description,
-    SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.Segment(description)),
-    ActiveProjectDetail = new ActiveProjectDetail { DeclaredSourceType = ActiveProjectSourceType.ExplicitDemand }
+    Description = request,
+    SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.BuildActiveProjectPassages(request, budget, null)),
+    ActiveProjectDetail = new ActiveProjectDetail { DeclaredSourceType = ActiveProjectSourceType.ExplicitDemand, Budget = budget }
 };
 
-Opportunity MakeBusinessProspect(string title, string description, string? industry = null, string? geography = null) => new()
+Opportunity MakeBusinessProspect(string title, string evidenceText, string? industry = null, string? geography = null) => new()
 {
     EntityType = OpportunityEntityType.BusinessProspect,
     Title = title,
-    Description = description,
-    SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.Segment(description)),
+    Description = evidenceText,
+    SourcePassagesJson = OpportunityRadarEngine.SerializePassages(OpportunityRadarEngine.BuildBusinessProspectPassages([new EvidenceFact(evidenceText, null, null)])),
     BusinessProspectDetail = new BusinessProspectDetail
     {
         NormalizedBusinessName = OpportunityRadarEngine.NormalizeBusinessName(title),
@@ -60,11 +61,60 @@ Opportunity MakeBusinessProspect(string title, string description, string? indus
 
 var preferences = MakePreferences();
 
-// Source handling and identity helpers.
-const string sourceText = "First  source paragraph.\nWith an internal line.\n\nSecond source paragraph.";
-var passages = OpportunityRadarEngine.Segment(sourceText);
-Check(passages.Count == 2 && passages[0].Text == "First  source paragraph.\nWith an internal line.",
-    "Passages must preserve source text in stable order.");
+// Structured evidence: passages come directly from the import contract, one per fixed field
+// (Active Project) or one per fact (Business Prospect), with no mechanical text-chopping.
+var activeProjectPassages = OpportunityRadarEngine.BuildActiveProjectPassages(
+    "Reconcile orders daily.", "$5,000", new CompetitionInfo("5-10", 1, 0));
+Check(activeProjectPassages.Select(x => x.Id).SequenceEqual(["request", "budget", "competition"]),
+    "Active Project passages must be named after their source field, in a stable order.");
+Check(activeProjectPassages[0].Text == "Reconcile orders daily." && activeProjectPassages[1].Text == "$5,000"
+    && activeProjectPassages[2].Text == "Proposals: 5-10, Interviewing: 1, Hires: 0",
+    "Active Project passage text must be verbatim, not mechanically chopped.");
+Check(OpportunityRadarEngine.BuildActiveProjectPassages("Just the request.", null, null).Count == 1,
+    "Budget and competition passages must be omitted when not supplied.");
+
+var facts = new EvidenceFact[]
+{
+    new("A public job listing describes manual order handling.", "https://example.com/job", new DateTime(2026, 1, 5)),
+    new("A review site shows a four-star average.", null, null)
+};
+var businessProspectPassages = OpportunityRadarEngine.BuildBusinessProspectPassages(facts);
+Check(businessProspectPassages.Select(x => x.Id).SequenceEqual(["fact-1", "fact-2"])
+    && businessProspectPassages[0].Source == "https://example.com/job" && businessProspectPassages[0].Date == new DateTime(2026, 1, 5)
+    && businessProspectPassages[1].Source is null,
+    "Business Prospect passages must carry each fact's own source and date.");
+
+var activeDescription = OpportunityRadarEngine.ComposeActiveProjectDescription(new ActiveProjectImportRequest(
+    "Title", "The request text.", Budget: "$5,000", Risk: "Scope could grow."));
+Check(activeDescription.Contains("Request:\nThe request text.") && activeDescription.Contains("Budget:\n$5,000")
+    && activeDescription.Contains("Risk:\nScope could grow."),
+    "The derived Active Project description must include every populated field under its own label.");
+
+var businessDescription = OpportunityRadarEngine.ComposeBusinessProspectDescription(new BusinessProspectImportRequest(
+    "Business", facts, Fit: "A contained first engagement is plausible."));
+Check(businessDescription.Contains("Fit:\nA contained first engagement is plausible.") && businessDescription.Contains("- A public job listing"),
+    "The derived Business Prospect description must include the fit assessment and the evidence facts.");
+
+// Evidence array validation: the combined fact length must land in the same 20-30,000 character
+// budget the old single evidence string enforced, now checked via IValidatableObject since it spans
+// multiple items instead of one [StringLength] attribute.
+var validationResults = new List<ValidationResult>();
+var thinRequest = new BusinessProspectImportRequest("Business", [new EvidenceFact("Too short.", null, null)]);
+Check(!Validator.TryValidateObject(thinRequest, new ValidationContext(thinRequest), validationResults, true),
+    "Combined evidence under 20 characters must fail validation.");
+validationResults.Clear();
+var validRequest = new BusinessProspectImportRequest("Business", facts);
+Check(Validator.TryValidateObject(validRequest, new ValidationContext(validRequest), validationResults, true),
+    "Combined evidence within budget must pass validation.");
+
+// Budget now comes from an explicit field instead of a regex over free text.
+var budgetOpportunity = MakeActiveProject("Budget test", "A contained integration project.", "$1,000");
+var budgetPreferences = MakePreferences();
+var budgetAssessment = new ActiveProjectV2Assessment("ExplicitDemand", 0.9, "Automation",
+    OpportunityRadarV2.ActiveDefaults.Keys.ToDictionary(key => key, _ => new JevJudgment(2.4, 0.8, "request")), false, false, false, "none");
+Check(OpportunityRadarV2.ComposeActiveProject(budgetOpportunity, budgetPreferences, budgetAssessment).BudgetStatus == BudgetStatus.Incompatible,
+    "A stated budget below the configured minimum must resolve to Incompatible from the explicit Budget field.");
+
 Check(OpportunityRadarEngine.Fingerprint("A", "B", null) == OpportunityRadarEngine.Fingerprint("a", "b", null),
     "Fingerprint normalization should be case-insensitive.");
 Check(OpportunityRadarEngine.NormalizeWebsiteDomain("https://www.Example-Site.test/path") == "example-site.test",
@@ -122,6 +172,15 @@ Check(digitalResult.RubricVersion == OpportunityRadarV2.DigitalRubricVersion
     && digitalResult.EffectiveWeights!.Keys.SequenceEqual(OpportunityRadarV2.DigitalDefaults.Keys),
     "Digital Presence prospects must use the independent Digital Presence profile.");
 
+// marketAccessFit is never asked to Jev - ComposeBusinessProspect always hands it a locally computed
+// MarketFit() score with EvidencePassageId hardcoded to "none". A supplied industry pushes that score
+// to 2, which would otherwise always trip the "unsupported factor" check regardless of evidence quality.
+var marketFitProspect = MakeBusinessProspect("Market fit prospect",
+    "Direct evidence supports a contained business improvement with a clear buyer and source passage.", industry: "Healthcare");
+var marketFitResult = OpportunityRadarV2.ComposeBusinessProspect(marketFitProspect, preferences, unknownClassification with { ProspectType = BusinessProspectType.OperationalPain });
+Check(!marketFitResult.Checks!.Any(x => x.Key == "unsupported:marketAccessFit"),
+    "marketAccessFit must never trigger the unsupported-factor check, since it is never asked to Jev in the first place.");
+
 // CSV export and injection defenses.
 var dangerousExportValues = new[] { "=cmd", "+cmd", "-cmd", "@cmd", "\t=cmd", "\r\n=cmd", "＝cmd", "＋cmd", "－cmd", "＠cmd" };
 Check(dangerousExportValues.All(value => OpportunityRadarReporting.SanitizeExportValue(value).StartsWith("'", StringComparison.Ordinal)),
@@ -155,7 +214,7 @@ var jevResponse = JsonSerializer.Serialize(new
         ["urgency"] = ScoreAnswer(2.4), ["buyer_readiness"] = ScoreAnswer(2.3),
         ["information_market_fit"] = ScoreAnswer(2.5), ["employment_or_staffing"] = NoulAnswer(0.05),
         ["team_scale"] = NoulAnswer(0.05), ["core_system_replacement"] = NoulAnswer(0.05),
-        ["primary_evidence"] = ChoiceAnswer("p1"), ["concern_evidence"] = ChoiceAnswer("none")
+        ["primary_evidence"] = ChoiceAnswer("request"), ["concern_evidence"] = ChoiceAnswer("none")
     },
     usage = new { input_tokens = 321, output_tokens = 44 }
 });
@@ -211,7 +270,7 @@ var prospectResponse = JsonSerializer.Serialize(new
         ["business_strength"] = ScoreAnswer(2.6), ["digital_weakness"] = ScoreAnswer(2.8),
         ["reputation_mismatch"] = ScoreAnswer(2.4), ["entry_project_strength"] = ScoreAnswer(2.5),
         ["speculative_workflow"] = NoulAnswer(0.1), ["physical_or_judgment_heavy"] = NoulAnswer(0.1),
-        ["core_system_replacement"] = NoulAnswer(0.1), ["primary_evidence"] = ChoiceAnswer("p1"),
+        ["core_system_replacement"] = NoulAnswer(0.1), ["primary_evidence"] = ChoiceAnswer("fact-1"),
         ["concern_evidence"] = ChoiceAnswer("none")
     },
     usage = new { input_tokens = 210, output_tokens = 38 }
@@ -236,43 +295,10 @@ Check(prospectJev.EstimateMaximumInputTokens(prospectOpportunity, preferences)
       == prospectJev.EstimateMaximumInputTokens(prospectOpportunity, differentPreferences),
     "Business Prospect Jev requests must not depend on local preferences.");
 
-// The downloadable CSV examples use the complete agent-facing contract. Keep both shapes
-// parseable so UI copy changes cannot quietly drift away from the API's accepted columns.
-var csvImporter = new OpportunityCsvImportService();
-var activeProjectCsv = string.Join('\n',
-    "title,description,source_type,source_name,source_url,source_date,external_id,research_confidence,research_confidence_reason,research_agent",
-    "\"Replace with project title\",\"Replace this row with the full source description, including the requested outcome, scope, budget, timing, and constraints.\",ExplicitDemand,\"Example source\",\"https://example.com/opportunities/replace-me\",2026-09-25T00:00:00Z,\"source-system-project-001\",High,\"The primary source states the scope, budget, and schedule.\",\"Replace with agent name\"");
-using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(activeProjectCsv)))
-{
-    var rows = csvImporter.ParseActiveProjects(stream);
-    var row = rows.Single();
-    Check(row.Title == "Replace with project title" && row.SourceType == "ExplicitDemand",
-        "The Active Project sample should parse its required fields.");
-    Check(row.SourceUrl == "https://example.com/opportunities/replace-me"
-          && row.SourceDate == new DateTime(2026, 9, 25, 0, 0, 0, DateTimeKind.Utc),
-        "The Active Project sample should parse its source URL and ISO date.");
-    Check(row.ExternalId == "source-system-project-001" && row.ResearchConfidence == "High"
-          && row.ResearchConfidenceReason?.Contains("scope, budget", StringComparison.Ordinal) == true
-          && row.ResearchAgent == "Replace with agent name",
-        "The Active Project sample should parse the complete agent metadata.");
-}
-
-var businessProspectCsv = string.Join('\n',
-    "business_name,evidence,website_url,geography,industry,source_name,source_url,source_date,external_id,prospect_type,research_confidence,research_confidence_reason,research_agent",
-    "\"Replace with business name\",\"Replace this row with direct, source-backed evidence about the business, observed problem, and a focused first engagement.\",\"https://example.com\",Raleigh,\"Professional services\",\"Example source\",\"https://example.com/about\",2026-09-25T00:00:00Z,\"source-system-business-001\",OperationalPain,High,\"The business website directly supports the supplied evidence.\",\"Replace with agent name\"");
-using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(businessProspectCsv)))
-{
-    var rows = csvImporter.ParseBusinessProspects(stream);
-    var row = rows.Single();
-    Check(row.BusinessName == "Replace with business name" && row.WebsiteUrl == "https://example.com",
-        "The Business Prospect sample should parse its required fields and website URL.");
-    Check(row.Geography == "Raleigh" && row.Industry == "Professional services"
-          && row.SourceDate == new DateTime(2026, 9, 25, 0, 0, 0, DateTimeKind.Utc),
-        "The Business Prospect sample should parse its classification context and ISO date.");
-    Check(row.ExternalId == "source-system-business-001" && row.ProspectType == "OperationalPain"
-          && row.ResearchConfidence == "High" && row.ResearchAgent == "Replace with agent name",
-        "The Business Prospect sample should parse the complete agent metadata.");
-}
+// Prospect type is now a purely explicit field (no more regex fallback scanning evidence text).
+Check(OpportunityImportService.ParseProspectType("OperationalPain") == BusinessProspectType.OperationalPain,
+    "An explicit prospect type value must still parse.");
+Check(OpportunityImportService.ParseProspectType(null) is null, "An omitted prospect type must resolve to null, not throw.");
 
 if (string.Equals(Environment.GetEnvironmentVariable("RADAR_RUN_LIVE_CONTRACT"), "true", StringComparison.OrdinalIgnoreCase))
 {

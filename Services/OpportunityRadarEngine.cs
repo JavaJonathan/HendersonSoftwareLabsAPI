@@ -6,7 +6,7 @@ using HendersonSoftwareLabsAPI.Entities;
 
 namespace HendersonSoftwareLabsAPI.Services;
 
-public record RadarPassage(string Id, string Text);
+public record RadarPassage(string Id, string Text, string? Source = null, DateTime? Date = null);
 public record RadarFactor(string Key, string Label, double Score, string EvidencePassageId, string Explanation);
 public record EvaluationCheck(string Key, EvaluationCheckSeverity Severity, string Explanation, string EvidencePassageId = "none",
     EvaluationCheckCategory Category = EvaluationCheckCategory.Concern);
@@ -52,35 +52,50 @@ public static class OpportunityRadarEngine
     public static List<RadarPassage> DeserializePassages(string json) =>
         JsonSerializer.Deserialize<List<RadarPassage>>(json, CaseInsensitiveOptions) ?? [];
 
-    public static IReadOnlyList<RadarPassage> Segment(string description)
+    // Passages come directly from the structured import contract now (one per fixed Active Project
+    // field, one per Business Prospect evidence fact) instead of being mechanically guessed from a
+    // flat text blob. See ImportService.BuildActiveProjectPassages/BuildBusinessProspectPassages.
+    public static List<RadarPassage> BuildActiveProjectPassages(string request, string? budget, CompetitionInfo? competition)
     {
-        var blocks = Regex.Split(description.Trim(), @"(?:\r?\n){2,}")
-            .Select(x => x.Trim())
-            .Where(x => x.Length > 0)
-            .SelectMany(SplitLongBlock)
-            .Take(100)
-            .ToList();
-        return blocks.Select((text, index) => new RadarPassage($"p{index + 1}", text)).ToList();
+        var passages = new List<RadarPassage> { new("request", request.Trim()) };
+        if (!string.IsNullOrWhiteSpace(budget)) passages.Add(new RadarPassage("budget", budget.Trim()));
+        if (competition is not null) passages.Add(new RadarPassage("competition", RenderCompetition(competition)));
+        return passages;
     }
 
-    private static IEnumerable<string> SplitLongBlock(string block)
-    {
-        if (block.Length <= 700) return [block];
-        var parts = new List<string>();
-        var offset = 0;
-        while (offset < block.Length)
+    public static List<RadarPassage> BuildBusinessProspectPassages(IReadOnlyList<EvidenceFact> facts) =>
+        facts.Select((fact, index) => new RadarPassage($"fact-{index + 1}", fact.Fact.Trim(),
+            string.IsNullOrWhiteSpace(fact.Source) ? null : fact.Source.Trim(), fact.Date)).ToList();
+
+    public static string ComposeActiveProjectDescription(ActiveProjectImportRequest request) => string.Join("\n\n",
+        new[]
         {
-            var length = Math.Min(700, block.Length - offset);
-            if (offset + length < block.Length)
-            {
-                var breakAt = block.LastIndexOfAny([' ', '\r', '\n'], offset + length - 1, length);
-                if (breakAt >= offset + 350) length = breakAt - offset + 1;
-            }
-            var passage = block.Substring(offset, length).Trim();
-            if (passage.Length > 0) parts.Add(passage);
-            offset += length;
-        }
-        return parts;
+            $"Request:\n{request.Request.Trim()}",
+            string.IsNullOrWhiteSpace(request.Budget) ? null : $"Budget:\n{request.Budget.Trim()}",
+            request.Competition is null ? null : $"Competition:\n{RenderCompetition(request.Competition)}",
+            string.IsNullOrWhiteSpace(request.Fit) ? null : $"Fit:\n{request.Fit.Trim()}",
+            string.IsNullOrWhiteSpace(request.ProposalAngle) ? null : $"Proposal angle:\n{request.ProposalAngle.Trim()}",
+            string.IsNullOrWhiteSpace(request.Risk) ? null : $"Risk:\n{request.Risk.Trim()}"
+        }.Where(x => x is not null));
+
+    public static string ComposeBusinessProspectDescription(BusinessProspectImportRequest request) => string.Join("\n\n",
+        new[]
+        {
+            string.IsNullOrWhiteSpace(request.Fit) ? null : $"Fit:\n{request.Fit.Trim()}",
+            string.IsNullOrWhiteSpace(request.EntryOffer) ? null : $"Entry offer:\n{request.EntryOffer.Trim()}",
+            string.IsNullOrWhiteSpace(request.Risk) ? null : $"Risk:\n{request.Risk.Trim()}",
+            "Evidence:\n" + string.Join("\n", request.Evidence.Select(fact => "- " + fact.Fact.Trim()
+                + (string.IsNullOrWhiteSpace(fact.Source) ? "" : $" (Source: {fact.Source.Trim()})")
+                + (fact.Date is { } date ? $" ({date:yyyy-MM-dd})" : "")))
+        }.Where(x => x is not null));
+
+    private static string RenderCompetition(CompetitionInfo competition)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(competition.Proposals)) parts.Add($"Proposals: {competition.Proposals.Trim()}");
+        if (competition.Interviewing is { } interviewing) parts.Add($"Interviewing: {interviewing}");
+        if (competition.Hires is { } hires) parts.Add($"Hires: {hires}");
+        return string.Join(", ", parts);
     }
 
     public static string Fingerprint(string title, string description, string? sourceUrl)

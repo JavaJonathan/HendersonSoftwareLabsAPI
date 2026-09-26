@@ -50,6 +50,13 @@ public class ActiveProjectDetail
     public Opportunity Opportunity { get; set; } = null!;
     public ActiveProjectSourceType DeclaredSourceType { get; set; } = ActiveProjectSourceType.ExplicitDemand;
     public ActiveProjectDecision? UserDecision { get; set; }
+    public string? Budget { get; set; }
+    public string? CompetitionProposals { get; set; }
+    public int? CompetitionInterviewing { get; set; }
+    public int? CompetitionHires { get; set; }
+    public string? Fit { get; set; }
+    public string? ProposalAngle { get; set; }
+    public string? Risk { get; set; }
 }
 
 public class BusinessProspectDetail
@@ -64,6 +71,9 @@ public class BusinessProspectDetail
     public BusinessProspectType? ImportedProspectType { get; set; }
     public BusinessProspectType? ProspectTypeOverride { get; set; }
     public BusinessProspectDecision? UserDecision { get; set; }
+    public string? Fit { get; set; }
+    public string? EntryOffer { get; set; }
+    public string? Risk { get; set; }
 }
 
 public class OpportunityEvaluation

@@ -144,7 +144,6 @@ builder.Services.AddHttpClient<JevBusinessProspectEvaluator>(client =>
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddTransient<IOpportunityEvaluator>(sp => sp.GetRequiredService<JevActiveProjectEvaluator>());
 builder.Services.AddTransient<IOpportunityEvaluator>(sp => sp.GetRequiredService<JevBusinessProspectEvaluator>());
-builder.Services.AddScoped<IOpportunityCsvImportService, OpportunityCsvImportService>();
 builder.Services.AddScoped<IOpportunityImportService, OpportunityImportService>();
 
 builder.Services.AddAuthorization(options =>

@@ -72,7 +72,7 @@ public static partial class OpportunityRadarV2
             checks.Add(new("weakClassification", EvaluationCheckSeverity.Review, "Jev's demand classification is unknown or below 55% confidence.", Category: EvaluationCheckCategory.EvidenceGap));
         if (prefs.ExcludedProjectTypes.Contains(assessment.ProjectType, StringComparer.OrdinalIgnoreCase))
             checks.Add(new("excludedProjectType", EvaluationCheckSeverity.Block, $"{assessment.ProjectType} is excluded by the current screening preferences."));
-        var budget = ParseBudget($"{opportunity.Title} {opportunity.Description}", prefs.MinimumBudget);
+        var budget = ParseBudget(opportunity.ActiveProjectDetail?.Budget ?? "", prefs.MinimumBudget);
         if (budget == BudgetStatus.Incompatible)
             checks.Add(new("inadequateBudget", EvaluationCheckSeverity.Block, "The stated budget is below the configured minimum."));
         AddCommonChecks(opportunity, factors, checks, ActiveLabels);
@@ -228,7 +228,11 @@ public static partial class OpportunityRadarV2
             checks.Add(new("lowResearchConfidence", EvaluationCheckSeverity.Review, "The sourcing agent marked the underlying research confidence as Low.", Category: EvaluationCheckCategory.EvidenceGap));
         if (opportunity.SourceDate is { } date && date < DateTime.UtcNow.AddDays(-180))
             checks.Add(new("staleEvidence", EvaluationCheckSeverity.Review, "The primary evidence source is more than 180 days old.", Category: EvaluationCheckCategory.EvidenceGap));
-        foreach (var factor in factors.Where(x => x.Value.Score >= 2 && x.Value.EvidencePassageId == "none"))
+        // marketAccessFit is never asked to Jev - ComposeBusinessProspect always hands it a locally
+        // computed MarketFit() score with EvidencePassageId hardcoded to "none". Flagging it as an
+        // unsupported high-confidence Jev judgment would be noise (it always fires whenever industry or
+        // geography preferences make it score >= 2), not a real evidence gap, so it's excluded here.
+        foreach (var factor in factors.Where(x => x.Key != "marketAccessFit" && x.Value.Score >= 2 && x.Value.EvidencePassageId == "none"))
             checks.Add(new($"unsupported:{factor.Key}", EvaluationCheckSeverity.Review, $"The high {labels.GetValueOrDefault(factor.Key, factor.Key)} judgment has no selected supporting passage.", Category: EvaluationCheckCategory.EvidenceGap));
     }
 

@@ -74,6 +74,11 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.HasKey(x => x.OpportunityId);
             entity.Property(x => x.DeclaredSourceType).HasConversion<string>().HasMaxLength(32);
             entity.Property(x => x.UserDecision).HasConversion<string>().HasMaxLength(20);
+            entity.Property(x => x.Budget).HasMaxLength(100);
+            entity.Property(x => x.CompetitionProposals).HasMaxLength(100);
+            entity.Property(x => x.Fit).HasMaxLength(1000);
+            entity.Property(x => x.ProposalAngle).HasMaxLength(1000);
+            entity.Property(x => x.Risk).HasMaxLength(1000);
             entity.HasOne(x => x.Opportunity).WithOne(x => x.ActiveProjectDetail)
                 .HasForeignKey<ActiveProjectDetail>(x => x.OpportunityId).OnDelete(DeleteBehavior.Cascade);
         });
@@ -89,6 +94,9 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.Property(x => x.ImportedProspectType).HasConversion<string>().HasMaxLength(32);
             entity.Property(x => x.ProspectTypeOverride).HasConversion<string>().HasMaxLength(32);
             entity.Property(x => x.UserDecision).HasConversion<string>().HasMaxLength(20);
+            entity.Property(x => x.Fit).HasMaxLength(1000);
+            entity.Property(x => x.EntryOffer).HasMaxLength(1000);
+            entity.Property(x => x.Risk).HasMaxLength(1000);
             entity.HasIndex(x => x.NormalizedBusinessName);
             entity.HasIndex(x => x.NormalizedWebsiteDomain);
             entity.HasOne(x => x.Opportunity).WithOne(x => x.BusinessProspectDetail)

@@ -15,8 +15,9 @@ namespace HendersonSoftwareLabsAPI.Controllers;
 
 [ApiController, Route("api/admin/opportunity-radar"), Authorize(Roles = Roles.Admin)]
 public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOpportunityEvaluator> evaluators,
-    IOpportunityCsvImportService csvImportService, IOpportunityImportService importService, IConfiguration configuration) : ControllerBase
+    IOpportunityImportService importService, IConfiguration configuration) : ControllerBase
 {
+    public record ImportBatchRequest<T>(string? ResearchAgent, [Required, MinLength(1), MaxLength(100)] IReadOnlyList<T> Items);
     public record EvaluateRequest(int[]? OpportunityIds, string? ConfirmationCode = null);
     public record EvaluationPreviewRequest(int[]? OpportunityIds);
     public record ReviewRequest(string? Decision, [StringLength(5000)] string Notes);
@@ -166,7 +167,19 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             activeProject = opportunity.ActiveProjectDetail is null ? null : new
             {
                 sourceType = opportunity.ActiveProjectDetail.DeclaredSourceType.ToString(),
-                userDecision = opportunity.ActiveProjectDetail.UserDecision?.ToString()
+                userDecision = opportunity.ActiveProjectDetail.UserDecision?.ToString(),
+                opportunity.ActiveProjectDetail.Budget,
+                competition = opportunity.ActiveProjectDetail.CompetitionProposals is null
+                    && opportunity.ActiveProjectDetail.CompetitionInterviewing is null && opportunity.ActiveProjectDetail.CompetitionHires is null
+                    ? null : new
+                    {
+                        proposals = opportunity.ActiveProjectDetail.CompetitionProposals,
+                        interviewing = opportunity.ActiveProjectDetail.CompetitionInterviewing,
+                        hires = opportunity.ActiveProjectDetail.CompetitionHires
+                    },
+                opportunity.ActiveProjectDetail.Fit,
+                opportunity.ActiveProjectDetail.ProposalAngle,
+                opportunity.ActiveProjectDetail.Risk
             },
             businessProspect = opportunity.BusinessProspectDetail is null ? null : new
             {
@@ -177,7 +190,10 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 industry = opportunity.BusinessProspectDetail.Industry,
                 importedProspectType = opportunity.BusinessProspectDetail.ImportedProspectType?.ToString(),
                 prospectTypeOverride = opportunity.BusinessProspectDetail.ProspectTypeOverride?.ToString(),
-                userDecision = opportunity.BusinessProspectDetail.UserDecision?.ToString()
+                userDecision = opportunity.BusinessProspectDetail.UserDecision?.ToString(),
+                opportunity.BusinessProspectDetail.Fit,
+                opportunity.BusinessProspectDetail.EntryOffer,
+                opportunity.BusinessProspectDetail.Risk
             },
             evaluation = evaluation is null ? null : new
             {
@@ -222,39 +238,27 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public async Task<IActionResult> ImportActiveProject(ActiveProjectImportRequest request, CancellationToken ct)
     {
         if (!TryActiveProjectSourceType(request.SourceType, out var sourceType)) return BadRequest(new { message = "Invalid source type." });
-        if (!ValidResearchConfidence(request.ResearchConfidence)) return BadRequest(new { message = "Research confidence must be Low, Medium, or High." });
+        if (!ValidResearchConfidence(request.Confidence?.Level)) return BadRequest(new { message = "Confidence level must be Low, Medium, or High." });
         if (!ValidUrl(request.SourceUrl)) return BadRequest(new { message = "Source URL must be an absolute http or https URL." });
         var result = await importService.ImportActiveProjectAsync(request, sourceType, false, null, ct);
         return Ok(new { result.Id, result.Created, result.Updated, result.NearDuplicateOfId });
     }
 
-    [HttpPost("import/active-projects/csv"), Consumes("multipart/form-data"), RequestSizeLimit(2_000_000)]
-    public async Task<IActionResult> ImportActiveProjectCsv(IFormFile file, CancellationToken ct)
+    [HttpPost("import/active-projects/batch"), RequestSizeLimit(2_000_000)]
+    public async Task<IActionResult> ImportActiveProjectsBatch(ImportBatchRequest<ActiveProjectImportRequest> request, CancellationToken ct)
     {
-        if (file.Length == 0 || file.Length > 2_000_000) return BadRequest(new { message = "CSV must be between 1 byte and 2 MB." });
-        IReadOnlyList<ActiveProjectImportRequest> rows;
-        try
-        {
-            using var stream = file.OpenReadStream();
-            rows = csvImportService.ParseActiveProjects(stream);
-        }
-        catch (CsvImportException ex) { return BadRequest(new { message = ex.Message }); }
-        if (rows.Any(x => x.Title.Length is < 1 or > 200 || x.Description.Length is < 20 or > 30000))
-            return BadRequest(new { message = "Each row needs a title and a description between 20 and 30,000 characters." });
-        if (rows.Any(x => !WithinLength(x.SourceName, 200) || !WithinLength(x.SourceUrl, 1000)
-            || !WithinLength(x.ExternalId, 200) || !WithinLength(x.ResearchConfidenceReason, 500) || !WithinLength(x.ResearchAgent, 100)))
-            return BadRequest(new { message = "One or more rows has a source_name, source_url, external_id, research_confidence_reason, or research_agent that exceeds its maximum length." });
-        if (rows.Any(x => !ValidUrl(x.SourceUrl) || !TryActiveProjectSourceType(x.SourceType, out _) || !ValidResearchConfidence(x.ResearchConfidence)))
-            return BadRequest(new { message = "One or more rows has an invalid source_type, source_url, or research_confidence." });
+        if (request.Items.Any(x => !TryActiveProjectSourceType(x.SourceType, out _) || !ValidResearchConfidence(x.Confidence?.Level) || !ValidUrl(x.SourceUrl)))
+            return BadRequest(new { message = "One or more items has an invalid source type, confidence level, or source URL." });
 
         var imported = new List<object>();
         var updated = new List<object>();
-        foreach (var row in rows)
+        foreach (var item in request.Items)
         {
-            TryActiveProjectSourceType(row.SourceType, out var sourceType);
-            var result = await importService.ImportActiveProjectAsync(row, sourceType, false, null, ct);
-            if (result.Updated) updated.Add(new { result.Id, row.Title });
-            else imported.Add(new { result.Id, row.Title, result.NearDuplicateOfId });
+            TryActiveProjectSourceType(item.SourceType, out var sourceType);
+            var withAgent = item.ResearchAgent is null && request.ResearchAgent is not null ? item with { ResearchAgent = request.ResearchAgent } : item;
+            var result = await importService.ImportActiveProjectAsync(withAgent, sourceType, false, null, ct);
+            if (result.Updated) updated.Add(new { result.Id, item.Title });
+            else imported.Add(new { result.Id, item.Title, result.NearDuplicateOfId });
         }
         return Ok(new { imported, updated });
     }
@@ -263,41 +267,26 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public async Task<IActionResult> ImportBusinessProspect(BusinessProspectImportRequest request, CancellationToken ct)
     {
         if (!ValidUrl(request.WebsiteUrl)) return BadRequest(new { message = "Website URL must be an absolute http or https URL." });
-        if (!ValidUrl(request.SourceUrl)) return BadRequest(new { message = "Source URL must be an absolute http or https URL." });
-        if (!ValidResearchConfidence(request.ResearchConfidence) || !ValidProspectType(request.ProspectType, request.Evidence))
-            return BadRequest(new { message = "Prospect type or research confidence is invalid." });
+        if (!ValidResearchConfidence(request.Confidence?.Level) || !ValidProspectType(request.ProspectType))
+            return BadRequest(new { message = "Prospect type or confidence level is invalid." });
         var result = await importService.ImportBusinessProspectAsync(request, false, null, ct);
         return Ok(new { result.Id, result.Created, result.Updated, result.NearDuplicateOfId });
     }
 
-    [HttpPost("import/business-prospects/csv"), Consumes("multipart/form-data"), RequestSizeLimit(2_000_000)]
-    public async Task<IActionResult> ImportBusinessProspectCsv(IFormFile file, CancellationToken ct)
+    [HttpPost("import/business-prospects/batch"), RequestSizeLimit(2_000_000)]
+    public async Task<IActionResult> ImportBusinessProspectsBatch(ImportBatchRequest<BusinessProspectImportRequest> request, CancellationToken ct)
     {
-        if (file.Length == 0 || file.Length > 2_000_000) return BadRequest(new { message = "CSV must be between 1 byte and 2 MB." });
-        IReadOnlyList<BusinessProspectImportRequest> rows;
-        try
-        {
-            using var stream = file.OpenReadStream();
-            rows = csvImportService.ParseBusinessProspects(stream);
-        }
-        catch (CsvImportException ex) { return BadRequest(new { message = ex.Message }); }
-        if (rows.Any(x => x.BusinessName.Length is < 1 or > 200 || x.Evidence.Length is < 20 or > 30000))
-            return BadRequest(new { message = "Each row needs a business name and evidence between 20 and 30,000 characters." });
-        if (rows.Any(x => !WithinLength(x.Geography, 200) || !WithinLength(x.Industry, 200) || !WithinLength(x.SourceName, 200)
-            || !WithinLength(x.WebsiteUrl, 1000) || !WithinLength(x.SourceUrl, 1000)
-            || !WithinLength(x.ExternalId, 200) || !WithinLength(x.ResearchConfidenceReason, 500) || !WithinLength(x.ResearchAgent, 100)))
-            return BadRequest(new { message = "One or more rows has a geography, industry, source_name, website_url, source_url, external_id, research_confidence_reason, or research_agent that exceeds its maximum length." });
-        if (rows.Any(x => !ValidUrl(x.WebsiteUrl) || !ValidUrl(x.SourceUrl)
-            || !ValidResearchConfidence(x.ResearchConfidence) || !ValidProspectType(x.ProspectType, x.Evidence)))
-            return BadRequest(new { message = "One or more rows has an invalid URL, prospect_type, or research_confidence." });
+        if (request.Items.Any(x => !ValidUrl(x.WebsiteUrl) || !ValidResearchConfidence(x.Confidence?.Level) || !ValidProspectType(x.ProspectType)))
+            return BadRequest(new { message = "One or more items has an invalid website URL, prospect type, or confidence level." });
 
         var imported = new List<object>();
         var updated = new List<object>();
-        foreach (var row in rows)
+        foreach (var item in request.Items)
         {
-            var result = await importService.ImportBusinessProspectAsync(row, false, null, ct);
-            if (result.Updated) updated.Add(new { result.Id, row.BusinessName });
-            else imported.Add(new { result.Id, row.BusinessName, result.NearDuplicateOfId });
+            var withAgent = item.ResearchAgent is null && request.ResearchAgent is not null ? item with { ResearchAgent = request.ResearchAgent } : item;
+            var result = await importService.ImportBusinessProspectAsync(withAgent, false, null, ct);
+            if (result.Updated) updated.Add(new { result.Id, item.BusinessName });
+            else imported.Add(new { result.Id, item.BusinessName, result.NearDuplicateOfId });
         }
         return Ok(new { imported, updated });
     }
@@ -789,11 +778,6 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     private static int PriorityOrder(string? value) => value switch { "High" => 0, "Medium" => 1, "Low" => 2, _ => 3 };
     private static bool ValidUrl(string? value) => string.IsNullOrWhiteSpace(value)
         || Uri.TryCreate(value, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
-    // CSV rows are built by hand in OpportunityCsvImportService, not via model binding, so the
-    // [StringLength] attributes on ActiveProjectImportRequest/BusinessProspectImportRequest (which the
-    // single-record JSON import gets enforced for free) are otherwise never checked for a CSV import,
-    // and an over-length optional field would fail at the database instead of with a clean 400.
-    private static bool WithinLength(string? value, int max) => value is null || value.Length <= max;
     private static bool TryActiveProjectSourceType(string value, out ActiveProjectSourceType sourceType) =>
         Enum.TryParse(value.Replace("_", "", StringComparison.Ordinal), true, out sourceType) && Enum.IsDefined(sourceType);
     private static bool TryEntityTypeFilter(string value, out OpportunityEntityType? entityType)
@@ -810,37 +794,88 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         catch (ArgumentException) { return false; }
     }
 
-    private static bool ValidProspectType(string? value, string evidence)
+    private static bool ValidProspectType(string? value)
     {
-        try { _ = OpportunityImportService.ParseProspectType(value, evidence); return true; }
+        try { _ = OpportunityImportService.ParseProspectType(value); return true; }
         catch (ArgumentException) { return false; }
     }
 
     private static IReadOnlyList<(string Key, ActiveProjectSourceType SourceType, ActiveProjectImportRequest Request)> ActiveProjectSamples() =>
     [
-        ("integration-strong", ActiveProjectSourceType.ExplicitDemand, new("Shopify supplier reconciliation", "We need a tool that reconciles Shopify orders with supplier spreadsheets, flags mismatches, and produces a daily exception report. Budget is $8,000 and delivery is expected within 8 weeks.", "ExplicitDemand")),
-        ("automation-semantic", ActiveProjectSourceType.ExplicitDemand, new("Remove daily order rekeying", "Our operations coordinator copies new orders from email attachments into three vendor systems every morning. We want the repeated entry removed and failures surfaced for review. Budget is $6,000.", "ExplicitDemand")),
-        ("keyword-bad-scope", ActiveProjectSourceType.ExplicitDemand, new("Enterprise React .NET transformation", "Seeking a full-time principal engineer to lead a multi-year enterprise React, .NET, SQL, and AWS transformation with a team of twelve developers. Salary and employee benefits provided.", "ExplicitDemand")),
-        ("unknown-budget", ActiveProjectSourceType.ExplicitDemand, new("Customer reporting portal", "Build a secure customer portal where clients can view monthly SQL-backed reports and download approved exports. We have a clear design and would like delivery in 10 weeks.", "ExplicitDemand")),
-        ("low-budget", ActiveProjectSourceType.ExplicitDemand, new("Inventory dashboard", "Create a React inventory dashboard connected to our existing API. Fixed budget is $500 and the deadline is two weeks.", "ExplicitDemand")),
-        ("full-time-role", ActiveProjectSourceType.ExplicitDemand, new("Senior software engineer", "Full-time employee role for a senior C# and React engineer. This position is 40 hours per week and includes salary, health insurance, and paid leave.", "ExplicitDemand")),
-        ("vague-request", ActiveProjectSourceType.ExplicitDemand, new("Need an app", "We need an app to make our business better. Please send a quote.", "ExplicitDemand")),
-        ("api-risk", ActiveProjectSourceType.ExplicitDemand, new("Legacy vendor synchronization", "Build an integration that synchronizes customer records with our legacy vendor. API access is pending vendor approval and the undocumented API may not expose update operations. Budget is $9,000.", "ExplicitDemand")),
-        ("operational-signal", ActiveProjectSourceType.OperationalSignal, new("Daily spreadsheet order processing", "Synthetic company job description: the operations specialist downloads orders, rekeys them into supplier spreadsheets, and emails exception reports each day.", "OperationalSignal")),
-        ("integration-near-duplicate", ActiveProjectSourceType.ExplicitDemand, new("Shopify order and supplier reconciliation", "We need a tool to reconcile Shopify orders against supplier spreadsheets, highlight mismatches, and send a daily exception report. Budget is $8,000 with an 8 week delivery target.", "ExplicitDemand"))
+        ("integration-strong", ActiveProjectSourceType.ExplicitDemand, new("Shopify supplier reconciliation",
+            "We need a tool that reconciles Shopify orders with supplier spreadsheets, flags mismatches, and produces a daily exception report within 8 weeks.",
+            "ExplicitDemand", Budget: "$8,000")),
+        ("automation-semantic", ActiveProjectSourceType.ExplicitDemand, new("Remove daily order rekeying",
+            "Our operations coordinator copies new orders from email attachments into three vendor systems every morning. We want the repeated entry removed and failures surfaced for review.",
+            "ExplicitDemand", Budget: "$6,000")),
+        ("keyword-bad-scope", ActiveProjectSourceType.ExplicitDemand, new("Enterprise React .NET transformation",
+            "Seeking a full-time principal engineer to lead a multi-year enterprise React, .NET, SQL, and AWS transformation with a team of twelve developers. Salary and employee benefits provided.",
+            "ExplicitDemand")),
+        ("unknown-budget", ActiveProjectSourceType.ExplicitDemand, new("Customer reporting portal",
+            "Build a secure customer portal where clients can view monthly SQL-backed reports and download approved exports. We have a clear design and would like delivery in 10 weeks.",
+            "ExplicitDemand")),
+        ("low-budget", ActiveProjectSourceType.ExplicitDemand, new("Inventory dashboard",
+            "Create a React inventory dashboard connected to our existing API. The deadline is two weeks.",
+            "ExplicitDemand", Budget: "$500")),
+        ("full-time-role", ActiveProjectSourceType.ExplicitDemand, new("Senior software engineer",
+            "Full-time employee role for a senior C# and React engineer. This position is 40 hours per week and includes salary, health insurance, and paid leave.",
+            "ExplicitDemand")),
+        ("vague-request", ActiveProjectSourceType.ExplicitDemand, new("Need an app",
+            "We need an app to make our business better. Please send a quote.",
+            "ExplicitDemand")),
+        ("api-risk", ActiveProjectSourceType.ExplicitDemand, new("Legacy vendor synchronization",
+            "Build an integration that synchronizes customer records with our legacy vendor.",
+            "ExplicitDemand", Budget: "$9,000", Risk: "API access is pending vendor approval and the undocumented API may not expose update operations.")),
+        ("operational-signal", ActiveProjectSourceType.OperationalSignal, new("Daily spreadsheet order processing",
+            "Synthetic company job description: the operations specialist downloads orders, rekeys them into supplier spreadsheets, and emails exception reports each day.",
+            "OperationalSignal")),
+        ("integration-near-duplicate", ActiveProjectSourceType.ExplicitDemand, new("Shopify order and supplier reconciliation",
+            "We need a tool to reconcile Shopify orders against supplier spreadsheets, highlight mismatches, and send a daily exception report with an 8 week delivery target.",
+            "ExplicitDemand", Budget: "$8,000"))
     ];
 
     private static IReadOnlyList<(string Key, BusinessProspectImportRequest Request)> BusinessProspectSamples() =>
     [
-        ("prospect-strong", new("Riverside Family Dental", "Synthetic research: established dental practice, well known locally, 5-star reviews and loyal customers for over fifteen years. The website is outdated, not mobile friendly, and has no online booking system. The practice needs a new website with online booking.", "https://example-riverside-dental.test", "Local", "Healthcare")),
-        ("prospect-already-modern", new("Crestline Auto Body", "Synthetic research: well-regarded auto body shop with a modern website, mobile friendly, recently redesigned, with online booking already in place.", "https://example-crestline-autobody.test", "Local", "Automotive")),
-        ("prospect-unknown-intent", new("Maple Street Bakery", "Synthetic research: a small bakery with a loyal local following. The website has not been updated in years and has no contact form. No hiring or purchasing signal was found.", "https://example-maple-bakery.test", "Local", "Food")),
-        ("prospect-reputation-mismatch", new("Sterling Home Roofing", "Synthetic research: highly rated, trusted roofing company with hundreds of positive reviews and a long-standing reputation, but the current website is broken on mobile and hasn't been updated in years.", "https://example-sterling-roofing.test", "Regional", "HomeServices")),
-        ("prospect-excluded-industry", new("Bayview Legal Group", "Synthetic research: an established law firm with an outdated website and no online intake form.", "https://example-bayview-legal.test", "Regional", "Legal")),
-        ("prospect-thin-evidence", new("Downtown Coffee Cart", "Synthetic research: a small coffee cart, not much else known.", null, null, "Food")),
-        ("prospect-no-contact", new("Northgate Landscaping", "Synthetic research: an established landscaping company with an outdated site. No phone number listed and no way to reach the business was found anywhere online.", "https://example-northgate-landscaping.test", "Local", "HomeServices")),
-        ("prospect-entry-project", new("Value Hardware Supply", "Synthetic research: a long-standing hardware supplier. The website needs a new website; there is no online store and the contact form is broken. A contact page lists a phone number.", "https://example-value-hardware.test", "Local", "Retail")),
-        ("prospect-near-duplicate-a", new("Harbor View Physical Therapy", "Synthetic research pass one: established physical therapy clinic, well known and trusted locally, outdated website with no online booking.", null, "Local", "Healthcare")),
-        ("prospect-near-duplicate-b", new("Harbor View Physical Therapy Clinic", "Synthetic research pass two: same clinic found through a different source, established and highly rated, website hasn't been updated in years.", null, "Local", "Healthcare"))
+        ("prospect-strong", new("Riverside Family Dental",
+            [new EvidenceFact("Established dental practice, well known locally, 5-star reviews and loyal customers for over fifteen years.", "https://example-riverside-dental.test", null),
+             new EvidenceFact("The website is outdated, not mobile friendly, and has no online booking system.", "https://example-riverside-dental.test", null)],
+            "https://example-riverside-dental.test", "Local", "Healthcare",
+            Fit: "The practice needs a new website with online booking.")),
+        ("prospect-already-modern", new("Crestline Auto Body",
+            [new EvidenceFact("Well-regarded auto body shop with a modern website, mobile friendly, recently redesigned, with online booking already in place.", "https://example-crestline-autobody.test", null)],
+            "https://example-crestline-autobody.test", "Local", "Automotive")),
+        ("prospect-unknown-intent", new("Maple Street Bakery",
+            [new EvidenceFact("A small bakery with a loyal local following.", "https://example-maple-bakery.test", null),
+             new EvidenceFact("The website has not been updated in years and has no contact form.", "https://example-maple-bakery.test", null)],
+            "https://example-maple-bakery.test", "Local", "Food",
+            Risk: "No hiring or purchasing signal was found.")),
+        ("prospect-reputation-mismatch", new("Sterling Home Roofing",
+            [new EvidenceFact("Highly rated, trusted roofing company with hundreds of positive reviews and a long-standing reputation.", "https://example-sterling-roofing.test", null),
+             new EvidenceFact("The current website is broken on mobile and hasn't been updated in years.", "https://example-sterling-roofing.test", null)],
+            "https://example-sterling-roofing.test", "Regional", "HomeServices")),
+        ("prospect-excluded-industry", new("Bayview Legal Group",
+            [new EvidenceFact("An established law firm with an outdated website and no online intake form.", "https://example-bayview-legal.test", null)],
+            "https://example-bayview-legal.test", "Regional", "Legal")),
+        ("prospect-thin-evidence", new("Downtown Coffee Cart",
+            [new EvidenceFact("A small coffee cart; not much else is known.", null, null)],
+            null, null, "Food")),
+        ("prospect-no-contact", new("Northgate Landscaping",
+            [new EvidenceFact("An established landscaping company with an outdated site.", "https://example-northgate-landscaping.test", null),
+             new EvidenceFact("No phone number listed and no way to reach the business was found anywhere online.", "https://example-northgate-landscaping.test", null)],
+            "https://example-northgate-landscaping.test", "Local", "HomeServices")),
+        ("prospect-entry-project", new("Value Hardware Supply",
+            [new EvidenceFact("A long-standing hardware supplier.", "https://example-value-hardware.test", null),
+             new EvidenceFact("There is no online store and the contact form is broken.", "https://example-value-hardware.test", null),
+             new EvidenceFact("A contact page lists a phone number.", "https://example-value-hardware.test", null)],
+            "https://example-value-hardware.test", "Local", "Retail",
+            Fit: "The business needs a new website with an online store.")),
+        ("prospect-near-duplicate-a", new("Harbor View Physical Therapy",
+            [new EvidenceFact("Established physical therapy clinic, well known and trusted locally.", null, null),
+             new EvidenceFact("Outdated website with no online booking.", null, null)],
+            null, "Local", "Healthcare")),
+        ("prospect-near-duplicate-b", new("Harbor View Physical Therapy Clinic",
+            [new EvidenceFact("Same clinic found through a different source, established and highly rated.", null, null),
+             new EvidenceFact("Website hasn't been updated in years.", null, null)],
+            null, "Local", "Healthcare"))
     ];
 }
