@@ -211,6 +211,16 @@ var marketFitResult = OpportunityRadarV2.ComposeBusinessProspect(marketFitProspe
 Check(!marketFitResult.Checks!.Any(x => x.Key == "unsupported:marketAccessFit"),
     "marketAccessFit must never trigger the unsupported-factor check, since it is never asked to Jev in the first place.");
 
+// hslDeliveryFit (Business Prospect only) no longer asks Jev to cite a passage either (see
+// BusinessProspectEvaluators): it is a judgment about matching HSL's own capabilities, not something
+// an observed business fact would demonstrate. It needs the same exemption as marketAccessFit, or a
+// high score with no citation would always trip the "unsupported factor" check.
+var hslFitFactors = new Dictionary<string, JevJudgment>(businessFactors) { ["hslDeliveryFit"] = new JevJudgment(2.6, 0.2, "none") };
+var hslFitAssessment = unknownClassification with { ProspectType = BusinessProspectType.OperationalPain, Factors = hslFitFactors };
+var hslFitResult = OpportunityRadarV2.ComposeBusinessProspect(prospect, preferences, hslFitAssessment);
+Check(!hslFitResult.Checks!.Any(x => x.Key == "unsupported:hslDeliveryFit"),
+    "hslDeliveryFit must never trigger the unsupported-factor check for Business Prospect, since it no longer asks Jev to cite a passage.");
+
 // CSV export and injection defenses.
 var dangerousExportValues = new[] { "=cmd", "+cmd", "-cmd", "@cmd", "\t=cmd", "\r\n=cmd", "＝cmd", "＋cmd", "－cmd", "＠cmd" };
 Check(dangerousExportValues.All(value => OpportunityRadarReporting.SanitizeExportValue(value).StartsWith("'", StringComparison.Ordinal)),
@@ -307,7 +317,7 @@ var prospectResponse = JsonSerializer.Serialize(new
         ["economic_leverage"] = ScoreAnswer(1.3), ["economic_leverage_passage"] = ChoiceAnswer("fact-1"),
         ["contained_engagement"] = ScoreAnswer(2.4), ["contained_engagement_passage"] = ChoiceAnswer("fact-1"),
         ["urgency"] = ScoreAnswer(2.1), ["urgency_passage"] = ChoiceAnswer("fact-1"),
-        ["hsl_delivery_fit"] = ScoreAnswer(2.6), ["hsl_delivery_fit_passage"] = ChoiceAnswer("fact-1"),
+        ["hsl_delivery_fit"] = ScoreAnswer(2.6),
         ["buyer_access"] = ScoreAnswer(2.1), ["buyer_access_passage"] = ChoiceAnswer("fact-1"),
         ["business_strength"] = ScoreAnswer(2.6), ["business_strength_passage"] = ChoiceAnswer("fact-1"),
         ["digital_weakness"] = ScoreAnswer(2.8), ["digital_weakness_passage"] = ChoiceAnswer("fact-1"),
@@ -334,6 +344,12 @@ Check(prospectHandler.LastRequestBody is not null
       && !prospectHandler.LastRequestBody.Contains("Sourcing agent reason", StringComparison.Ordinal)
       && !prospectHandler.LastRequestBody.Contains("OperationalPain", StringComparison.Ordinal),
     "The Jev request must be blind to imported agent identity, confidence, and classification.");
+Check(prospectHandler.LastRequestBody is not null && !prospectHandler.LastRequestBody.Contains("hsl_delivery_fit_passage", StringComparison.Ordinal),
+    "The Jev request must not ask for a passage citation on hsl_delivery_fit.");
+var prospectAssessment = OpportunityRadarV2.DeserializeBusiness(prospectOutcome.AssessmentJson);
+Check(prospectAssessment is not null && Math.Abs(prospectAssessment.Factors["hslDeliveryFit"].Score - 2.6) < 0.001
+      && prospectAssessment.Factors["hslDeliveryFit"].EvidencePassageId == "none",
+    "hslDeliveryFit must keep its score from Jev while its evidence passage is always none, even with no _passage question.");
 var differentPreferences = MakePreferences(excludedIndustries: ["SomethingElseEntirely"]);
 Check(prospectJev.EstimateMaximumInputTokens(prospectOpportunity, preferences)
       == prospectJev.EstimateMaximumInputTokens(prospectOpportunity, differentPreferences),
@@ -363,7 +379,7 @@ var combineResponse = JsonSerializer.Serialize(new
         ["economic_leverage"] = ScoreAnswer(1.3), ["economic_leverage_passage"] = ChoiceAnswer("fact-1"),
         ["contained_engagement"] = ScoreAnswer(2.4), ["contained_engagement_passage"] = ChoiceAnswer("fact-1"),
         ["urgency"] = ScoreAnswer(2.1), ["urgency_passage"] = ChoiceAnswer("fact-1"),
-        ["hsl_delivery_fit"] = ScoreAnswer(2.6), ["hsl_delivery_fit_passage"] = ChoiceAnswer("fact-1"),
+        ["hsl_delivery_fit"] = ScoreAnswer(2.6),
         ["buyer_access"] = ScoreAnswer(2.1), ["buyer_access_passage"] = ChoiceAnswer("fact-1"),
         ["business_strength"] = ScoreAnswer(2.6), ["business_strength_passage"] = ChoiceAnswer("fact-1"),
         ["digital_weakness"] = ScoreAnswer(2.8), ["digital_weakness_passage"] = ChoiceAnswer("fact-1"),

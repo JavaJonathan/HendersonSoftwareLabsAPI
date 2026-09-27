@@ -7,7 +7,7 @@ namespace HendersonSoftwareLabsAPI.Services;
 public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevBusinessProspectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-business-prospect-jev-v4";
+    public const string QuestionSetVersion = "radar-business-prospect-jev-v5";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.BusinessProspect;
 
@@ -73,8 +73,12 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             ["contained_engagement_passage"] = Choice("Choose the passage that best supports the contained_engagement score. Choose none when unsupported.", evidenceCriteria),
             ["urgency"] = Score("How strong is the direct evidence of urgency or favorable timing?", fourPoint),
             ["urgency_passage"] = Choice("Choose the passage that best supports the urgency score. Choose none when unsupported.", evidenceCriteria),
+            // No _passage companion: this is a judgment about whether the work matches HSL's own stated
+            // capabilities, not something an observed business fact would typically demonstrate. Asking
+            // for a citation here just made Jev cite a weak passage or, more often, cite none while still
+            // scoring high from general context - triggering an "unsupported" check that was noise, not
+            // signal (see AddCommonChecks in OpportunityRadarV2.cs).
             ["hsl_delivery_fit"] = Score("How well does the opportunity fit a small custom-software consultancy focused on integrations, automation, portals, reporting, and web applications?", fourPoint),
-            ["hsl_delivery_fit_passage"] = Choice("Choose the passage that best supports the hsl_delivery_fit score. Choose none when unsupported.", evidenceCriteria),
             ["buyer_access"] = Score("How reachable and identifiable is a likely buyer or decision-maker?", fourPoint),
             ["buyer_access_passage"] = Choice("Choose the passage that best supports the buyer_access score. Choose none when unsupported.", evidenceCriteria),
             ["business_strength"] = Score("How established does the business appear from real-world signals? Judge the business, not its website.", fourPoint),
@@ -116,7 +120,7 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             ["economicLeverage"] = Judgment(answers, "economic_leverage", passageIds),
             ["containedEngagement"] = Judgment(answers, "contained_engagement", passageIds),
             ["urgency"] = Judgment(answers, "urgency", passageIds),
-            ["hslDeliveryFit"] = Judgment(answers, "hsl_delivery_fit", passageIds),
+            ["hslDeliveryFit"] = JudgmentWithoutPassage(answers, "hsl_delivery_fit"),
             ["buyerAccess"] = Judgment(answers, "buyer_access", passageIds),
             ["businessStrength"] = Judgment(answers, "business_strength", passageIds),
             ["digitalWeakness"] = Judgment(answers, "digital_weakness", passageIds),
@@ -124,13 +128,18 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             ["entryProjectStrength"] = Judgment(answers, "entry_project_strength", passageIds)
         };
         var assessment = new BusinessProspectV2Assessment(prospectType, ConfidenceValue(answers, "prospect_type"), factors,
-            NoulValue(answers, "speculative_workflow") >= 0.67, NoulValue(answers, "physical_or_judgment_heavy") >= 0.67,
-            NoulValue(answers, "core_system_replacement") >= 0.67, ValidateEvidenceChoice(answers, "concern_evidence", passageIds));
+            NoulValue(answers, "speculative_workflow") >= OpportunityRadarThresholds.NoulYesThreshold,
+            NoulValue(answers, "physical_or_judgment_heavy") >= OpportunityRadarThresholds.NoulYesThreshold,
+            NoulValue(answers, "core_system_replacement") >= OpportunityRadarThresholds.NoulYesThreshold, ValidateEvidenceChoice(answers, "concern_evidence", passageIds));
         return (resolvedModel, assessment, usage.GetProperty("input_tokens").GetInt32(), usage.GetProperty("output_tokens").GetInt32());
     }
 
     private static JevJudgment Judgment(JsonElement answers, string key, HashSet<string> passageIds) =>
         new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), ValidateEvidenceChoice(answers, $"{key}_passage", passageIds));
+
+    // For factors with no _passage question at all (currently just hsl_delivery_fit - see BuildRequestJson).
+    private static JevJudgment JudgmentWithoutPassage(JsonElement answers, string key) =>
+        new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), "none");
 
     // Surfaces the sourcing agent's own category tag (see EvidenceFact.Category) inline with the passage
     // text, so Jev has an explicit hint for which factor a passage was collected for. It's a hint, not a

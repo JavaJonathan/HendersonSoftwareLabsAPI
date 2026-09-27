@@ -157,7 +157,7 @@ public class AdminController : ControllerBase
             return NotFound(new { message = "Client not found." });
         }
 
-        if (!Enum.TryParse<ProjectStatus>(request.Status, ignoreCase: true, out var status))
+        if (!Enum.TryParse<ProjectStatus>(request.Status, ignoreCase: true, out var status) || !Enum.IsDefined(status))
         {
             return BadRequest(new { message = $"Invalid status '{request.Status}'." });
         }
@@ -187,7 +187,7 @@ public class AdminController : ControllerBase
             return NotFound(new { message = "Client not found." });
         }
 
-        if (!Enum.TryParse<ProjectStatus>(request.Status, ignoreCase: true, out var status))
+        if (!Enum.TryParse<ProjectStatus>(request.Status, ignoreCase: true, out var status) || !Enum.IsDefined(status))
         {
             return BadRequest(new { message = $"Invalid status '{request.Status}'." });
         }

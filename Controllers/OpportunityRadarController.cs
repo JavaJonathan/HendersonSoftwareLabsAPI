@@ -131,13 +131,13 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         var items = pageItems.Select(x => new
         {
             x.Id, entityType = x.EntityType.ToString(), x.Title,
-            preview = x.Description.Length > 180 ? x.Description[..180] + "..." : x.Description,
+            preview = OpportunityRadarEngine.Preview(x.Description),
             sourceType = x.EntityType == OpportunityEntityType.ActiveProject ? x.SourceType?.ToString() : null,
             recommendation = x.Latest?.Recommendation?.ToString(), priorityBand = x.Latest?.PriorityBand?.ToString(),
             budgetStatus = x.EntityType == OpportunityEntityType.ActiveProject ? (x.Latest?.BudgetStatus ?? BudgetStatus.Unknown).ToString() : null,
             summary = x.Latest?.Summary, evaluationStatus = x.Latest?.Status.ToString(), evaluationProvider = x.Latest?.Provider.ToString(),
             opportunityScore = x.Latest?.OpportunityScore, jevConfidence = x.Latest?.JevConfidence,
-            prospectType = (x.ProspectTypeOverride ?? x.Latest?.EvaluatedProspectType ?? x.ImportedProspectType)?.ToString(),
+            prospectType = OpportunityRadarEngine.ResolvedProspectType(x.ProspectTypeOverride, x.Latest?.EvaluatedProspectType, x.ImportedProspectType)?.ToString(),
             needsVerification = x.Latest?.NeedsVerification ?? false,
             topFactorLabel = TopFactorLabel(resultJsonByOpportunityId.GetValueOrDefault(x.Id)),
             userDecision = x.EntityType == OpportunityEntityType.ActiveProject ? x.ActiveDecision?.ToString() : x.ProspectDecision?.ToString(),
@@ -258,7 +258,10 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     [HttpGet("export")]
     public async Task<IActionResult> Export(bool includeSynthetic = false, CancellationToken ct = default)
     {
-        var opportunities = await db.Opportunities.AsNoTracking().Include(x => x.Evaluations)
+        // Only the latest evaluation is ever read (see BuildCsv), so filtered-Include just that one row
+        // per opportunity instead of the full, ever-growing evaluation history - same technique already
+        // used by ValidateLiveBatch below.
+        var opportunities = await db.Opportunities.AsNoTracking().Include(x => x.Evaluations.OrderByDescending(e => e.CreatedAt).Take(1))
             .Include(x => x.ActiveProjectDetail).Include(x => x.BusinessProspectDetail)
             .Where(x => includeSynthetic || !x.IsSynthetic).OrderByDescending(x => x.CreatedAt).ToListAsync(ct);
         var preferences = await GetOrCreatePreferences(ct);
@@ -352,27 +355,20 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         if (opportunities.Count == 0) return BadRequest(new { message = "Choose at least one opportunity to evaluate." });
         var preferences = await GetOrCreatePreferences(ct);
         var evaluatorsByType = ResolveEvaluators(provider, opportunities);
-        var estimatedTokens = opportunities.Sum(x => evaluatorsByType[x.EntityType].EstimateMaximumInputTokens(x, preferences));
-        var inputPrice = configuration.GetValue("OpportunityRadar:JevInputPricePerMillionTokens", 0.042m);
-        var estimatedCost = estimatedTokens / 1_000_000m * inputPrice;
-        var batchCap = configuration.GetValue("OpportunityRadar:JevMaximumEstimatedBatchCostUsd", 0.05m);
-        var dailyLimit = configuration.GetValue("OpportunityRadar:JevDailyInputTokenLimit", 5_000_000);
-        var usedToday = await db.OpportunityEvaluations.AsNoTracking()
-            .Where(x => x.Provider == EvaluationProvider.Jev && x.CreatedAt >= DateTime.UtcNow.AddHours(-24) && x.InputTokens != null)
-            .SumAsync(x => x.InputTokens ?? 0, ct);
+        var estimate = await EstimateBatchCost(opportunities, evaluatorsByType, preferences, ct);
         var jevAvailable = evaluators.Where(x => x.Provider == EvaluationProvider.Jev).All(x => x.IsAvailable);
         var evaluatorsAvailable = evaluatorsByType.Values.All(x => x.IsAvailable);
-        var allowed = evaluatorsAvailable && estimatedCost <= batchCap && usedToday + estimatedTokens <= dailyLimit;
-        var confirmationCode = ConfirmationCode(opportunities, provider, estimatedTokens);
+        var allowed = evaluatorsAvailable && estimate.EstimatedCost <= estimate.BatchCap && estimate.UsedToday + estimate.EstimatedTokens <= estimate.DailyLimit;
+        var confirmationCode = ConfirmationCode(opportunities, provider, estimate.EstimatedTokens);
         return Ok(new
         {
-            provider = provider.ToString(), recordCount = opportunities.Count, estimatedMaximumInputTokens = estimatedTokens,
-            estimatedMaximumCostUsd = decimal.Round(estimatedCost, 6), maximumBatchCostUsd = batchCap,
-            rollingDailyInputTokensUsed = usedToday, rollingDailyInputTokenLimit = dailyLimit,
+            provider = provider.ToString(), recordCount = opportunities.Count, estimatedMaximumInputTokens = estimate.EstimatedTokens,
+            estimatedMaximumCostUsd = decimal.Round(estimate.EstimatedCost, 6), maximumBatchCostUsd = estimate.BatchCap,
+            rollingDailyInputTokensUsed = estimate.UsedToday, rollingDailyInputTokenLimit = estimate.DailyLimit,
             liveAvailable = jevAvailable, allowed,
             reason = !evaluatorsAvailable ? "Live Jev evaluation is not configured."
-                : estimatedCost > batchCap ? "The estimated maximum cost exceeds the server batch ceiling."
-                : usedToday + estimatedTokens > dailyLimit ? "The rolling daily input token limit would be exceeded." : null,
+                : estimate.EstimatedCost > estimate.BatchCap ? "The estimated maximum cost exceeds the server batch ceiling."
+                : estimate.UsedToday + estimate.EstimatedTokens > estimate.DailyLimit ? "The rolling daily input token limit would be exceeded." : null,
             confirmationCode
         });
     }
@@ -436,13 +432,15 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         if (opportunity is null) return NotFound();
         if (opportunity.EntityType == OpportunityEntityType.ActiveProject)
         {
-            if (!string.IsNullOrWhiteSpace(request.Decision) && !Enum.TryParse<ActiveProjectDecision>(request.Decision, out _))
+            if (!string.IsNullOrWhiteSpace(request.Decision)
+                && (!Enum.TryParse<ActiveProjectDecision>(request.Decision, out var parsedActiveDecision) || !Enum.IsDefined(parsedActiveDecision)))
                 return BadRequest(new { message = "Invalid decision." });
             opportunity.ActiveProjectDetail!.UserDecision = string.IsNullOrWhiteSpace(request.Decision) ? null : Enum.Parse<ActiveProjectDecision>(request.Decision);
         }
         else
         {
-            if (!string.IsNullOrWhiteSpace(request.Decision) && !Enum.TryParse<BusinessProspectDecision>(request.Decision, out _))
+            if (!string.IsNullOrWhiteSpace(request.Decision)
+                && (!Enum.TryParse<BusinessProspectDecision>(request.Decision, out var parsedProspectDecision) || !Enum.IsDefined(parsedProspectDecision)))
                 return BadRequest(new { message = "Invalid decision." });
             opportunity.BusinessProspectDetail!.UserDecision = string.IsNullOrWhiteSpace(request.Decision) ? null : Enum.Parse<BusinessProspectDecision>(request.Decision);
         }
@@ -502,7 +500,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public async Task<IActionResult> UpdatePreferences(PreferencesRequest request, CancellationToken ct)
     {
         if (request.ActiveProject.Capabilities.Length is < 1 or > 30 || request.ActiveProject.MinimumBudget < 0
-            || !Enum.TryParse<IncompleteInformationTolerance>(request.ActiveProject.IncompleteInformationTolerance, out _)
+            || !Enum.TryParse<IncompleteInformationTolerance>(request.ActiveProject.IncompleteInformationTolerance, out var parsedTolerance) || !Enum.IsDefined(parsedTolerance)
             || !ValidWeights(request.ActiveProject.WeightsV2, OpportunityRadarV2.ActiveDefaults.Keys)
             || !ValidWeights(request.BusinessProspect.OperationalPainWeights, OpportunityRadarV2.OperationalDefaults.Keys)
             || !ValidWeights(request.BusinessProspect.DigitalPresenceWeights, OpportunityRadarV2.DigitalDefaults.Keys)
@@ -591,7 +589,11 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public async Task<IActionResult> Digest(bool includeSynthetic = false, CancellationToken ct = default)
     {
         var preferences = await GetOrCreatePreferences(ct);
-        var opportunities = await db.Opportunities.AsNoTracking().Include(x => x.Evaluations)
+        // Only the latest evaluation is ever read (see ToSummary), so filtered-Include just that one row
+        // per opportunity instead of the full, ever-growing evaluation history - same technique already
+        // used by ValidateLiveBatch below. This is the admin's landing view, hit far more often than
+        // Export, so it's the one where the old unbounded load mattered most.
+        var opportunities = await db.Opportunities.AsNoTracking().Include(x => x.Evaluations.OrderByDescending(e => e.CreatedAt).Take(1))
             .Include(x => x.ActiveProjectDetail).Include(x => x.BusinessProspectDetail)
             .Where(x => includeSynthetic || !x.IsSynthetic).ToListAsync(ct);
 
@@ -746,24 +748,35 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         Dictionary<OpportunityEntityType, IOpportunityEvaluator> evaluatorsByType, RadarPreferences preferences,
         string? suppliedConfirmationCode, CancellationToken ct)
     {
-        var estimatedTokens = opportunities.Sum(x => evaluatorsByType[x.EntityType].EstimateMaximumInputTokens(x, preferences));
-        var inputPrice = configuration.GetValue("OpportunityRadar:JevInputPricePerMillionTokens", 0.042m);
-        var estimatedCost = estimatedTokens / 1_000_000m * inputPrice;
-        var batchCap = configuration.GetValue("OpportunityRadar:JevMaximumEstimatedBatchCostUsd", 0.05m);
-        if (estimatedCost > batchCap)
+        var estimate = await EstimateBatchCost(opportunities, evaluatorsByType, preferences, ct);
+        if (estimate.EstimatedCost > estimate.BatchCap)
             return StatusCode(StatusCodes.Status422UnprocessableEntity, new { message = "The estimated maximum cost exceeds the server batch ceiling." });
-        var dailyLimit = configuration.GetValue("OpportunityRadar:JevDailyInputTokenLimit", 5_000_000);
-        var usedToday = await db.OpportunityEvaluations.AsNoTracking()
-            .Where(x => x.Provider == EvaluationProvider.Jev && x.CreatedAt >= DateTime.UtcNow.AddHours(-24) && x.InputTokens != null)
-            .SumAsync(x => x.InputTokens ?? 0, ct);
-        if (usedToday + estimatedTokens > dailyLimit)
+        if (estimate.UsedToday + estimate.EstimatedTokens > estimate.DailyLimit)
             return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "The rolling daily Jev input token limit would be exceeded." });
-        var expected = ConfirmationCode(opportunities, EvaluationProvider.Jev, estimatedTokens);
+        var expected = ConfirmationCode(opportunities, EvaluationProvider.Jev, estimate.EstimatedTokens);
         if (string.IsNullOrWhiteSpace(suppliedConfirmationCode) || !CryptographicOperations.FixedTimeEquals(
                 Encoding.UTF8.GetBytes(suppliedConfirmationCode), Encoding.UTF8.GetBytes(expected)))
             return Conflict(new { message = "Preview this exact batch and confirm its estimated maximum cost before evaluation." });
         return null;
     }
+
+    // Shared by EvaluationPreview (which reports this to the admin before they commit) and
+    // ValidateLiveBatch (which enforces it) so the two can never drift on what "the estimate" means.
+    private async Task<BatchCostEstimate> EstimateBatchCost(IReadOnlyList<Opportunity> opportunities,
+        Dictionary<OpportunityEntityType, IOpportunityEvaluator> evaluatorsByType, RadarPreferences preferences, CancellationToken ct)
+    {
+        var estimatedTokens = opportunities.Sum(x => evaluatorsByType[x.EntityType].EstimateMaximumInputTokens(x, preferences));
+        var inputPrice = configuration.GetValue("OpportunityRadar:JevInputPricePerMillionTokens", 0.042m);
+        var estimatedCost = estimatedTokens / 1_000_000m * inputPrice;
+        var batchCap = configuration.GetValue("OpportunityRadar:JevMaximumEstimatedBatchCostUsd", 0.05m);
+        var dailyLimit = configuration.GetValue("OpportunityRadar:JevDailyInputTokenLimit", 5_000_000);
+        var usedToday = await db.OpportunityEvaluations.AsNoTracking()
+            .Where(x => x.Provider == EvaluationProvider.Jev && x.CreatedAt >= DateTime.UtcNow.AddHours(-24) && x.InputTokens != null)
+            .SumAsync(x => x.InputTokens ?? 0, ct);
+        return new BatchCostEstimate(estimatedTokens, estimatedCost, batchCap, dailyLimit, usedToday);
+    }
+
+    private sealed record BatchCostEstimate(int EstimatedTokens, decimal EstimatedCost, decimal BatchCap, int DailyLimit, int UsedToday);
 
     private static string ConfirmationCode(IEnumerable<Opportunity> opportunities, EvaluationProvider provider, int estimatedTokens)
     {
@@ -787,7 +800,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         var evaluation = opportunity.Evaluations.OrderByDescending(x => x.CreatedAt).FirstOrDefault();
         var isActiveProject = opportunity.EntityType == OpportunityEntityType.ActiveProject;
         return new SummaryRow(opportunity.Id, opportunity.EntityType.ToString(), opportunity.Title,
-            opportunity.Description.Length > 180 ? opportunity.Description[..180] + "..." : opportunity.Description,
+            OpportunityRadarEngine.Preview(opportunity.Description),
             isActiveProject ? opportunity.ActiveProjectDetail?.DeclaredSourceType.ToString() : null,
             evaluation?.Recommendation?.ToString(), evaluation?.PriorityBand?.ToString(),
             isActiveProject ? (evaluation?.BudgetStatus ?? BudgetStatus.Unknown).ToString() : null,
@@ -798,8 +811,9 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             isActiveProject ? null : opportunity.BusinessProspectDetail?.Geography,
             isActiveProject ? null : opportunity.BusinessProspectDetail?.NormalizedWebsiteDomain,
             evaluation?.OpportunityScore, evaluation?.JevConfidence,
-            isActiveProject ? null : (opportunity.BusinessProspectDetail?.ProspectTypeOverride ?? evaluation?.EvaluatedProspectType
-                ?? opportunity.BusinessProspectDetail?.ImportedProspectType)?.ToString(), evaluation?.NeedsVerification ?? false);
+            isActiveProject ? null : OpportunityRadarEngine.ResolvedProspectType(opportunity.BusinessProspectDetail?.ProspectTypeOverride,
+                evaluation?.EvaluatedProspectType, opportunity.BusinessProspectDetail?.ImportedProspectType)?.ToString(),
+            evaluation?.NeedsVerification ?? false);
     }
 
     private sealed record SummaryRow(int Id, string EntityType, string Title, string Preview, string? SourceType, string? Recommendation,

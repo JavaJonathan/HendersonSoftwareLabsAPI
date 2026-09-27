@@ -324,8 +324,9 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
             ["informationMarketFit"] = CombineJudgments(Judgment(answers, "information_market_fit_market", passageIds), Judgment(answers, "information_market_fit_delivery", passageIds))
         };
         var assessment = new ActiveProjectV2Assessment(kind.ToString(), ConfidenceValue(answers, "opportunity_kind"), projectType, factors,
-            NoulValue(answers, "employment_or_staffing") >= 0.67, NoulValue(answers, "team_scale") >= 0.67,
-            NoulValue(answers, "core_system_replacement") >= 0.67, ValidateEvidenceChoice(answers, "concern_evidence", passageIds));
+            NoulValue(answers, "employment_or_staffing") >= OpportunityRadarThresholds.NoulYesThreshold,
+            NoulValue(answers, "team_scale") >= OpportunityRadarThresholds.NoulYesThreshold,
+            NoulValue(answers, "core_system_replacement") >= OpportunityRadarThresholds.NoulYesThreshold, ValidateEvidenceChoice(answers, "concern_evidence", passageIds));
         return (resolvedModel, assessment, usage.GetProperty("input_tokens").GetInt32(), usage.GetProperty("output_tokens").GetInt32());
     }
 

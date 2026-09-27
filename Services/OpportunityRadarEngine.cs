@@ -47,6 +47,21 @@ public record BusinessProspectPreferences(
 
 public static class OpportunityRadarEngine
 {
+    // Shared by the List and Digest/Export summary projections so the 180-char preview rule can't drift
+    // between them. Only safe to call after materialization (LINQ-to-Objects) - EF Core cannot translate
+    // an arbitrary method call inside a query's Select() to SQL.
+    public static string Preview(string description) => description.Length > 180 ? description[..180] + "..." : description;
+
+    // The human-override/Jev/imported precedence for a Business Prospect's type, shared by the List and
+    // Digest/Export summary projections. Same materialization caveat as Preview above - List's own
+    // filtering .Where() clause (which does need SQL translation) keeps this chain inlined for that reason.
+    // OpportunityRadarV2.ComposeBusinessProspect intentionally does not use this: it resolves against a
+    // freshly computed Jev assessment rather than a persisted EvaluatedProspectType column, and explicitly
+    // treats an Unknown Jev result as "keep falling through" - a materially different rule, not the same
+    // duplicated one.
+    public static BusinessProspectType? ResolvedProspectType(BusinessProspectType? overrideValue, BusinessProspectType? evaluated, BusinessProspectType? imported) =>
+        overrideValue ?? evaluated ?? imported;
+
     public static string SerializePassages(IReadOnlyList<RadarPassage> passages) =>
         JsonSerializer.Serialize(passages, CamelCaseOptions);
 

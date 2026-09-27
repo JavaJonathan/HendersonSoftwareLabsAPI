@@ -143,7 +143,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
         var candidates = await db.Opportunities.AsNoTracking().Where(x => x.EntityType == OpportunityEntityType.ActiveProject)
             .Select(x => new { x.Id, x.Title, x.Description }).ToListAsync(ct);
         var near = candidates.Select(x => new { x.Id, Similarity = OpportunityRadarEngine.Similarity($"{request.Title} {description}", $"{x.Title} {x.Description}") })
-            .Where(x => x.Similarity >= 0.62).OrderByDescending(x => x.Similarity).FirstOrDefault();
+            .Where(x => x.Similarity >= OpportunityRadarThresholds.ActiveProjectNearDuplicateSimilarity).OrderByDescending(x => x.Similarity).FirstOrDefault();
 
         var opportunity = new Opportunity
         {
@@ -225,7 +225,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
         var candidates = await db.Opportunities.AsNoTracking().Where(x => x.EntityType == OpportunityEntityType.BusinessProspect)
             .Select(x => new { x.Id, Name = x.BusinessProspectDetail!.NormalizedBusinessName }).ToListAsync(ct);
         var near = candidates.Select(x => new { x.Id, Similarity = OpportunityRadarEngine.Similarity(normalizedName, x.Name) })
-            .Where(x => x.Similarity >= 0.72).OrderByDescending(x => x.Similarity).FirstOrDefault();
+            .Where(x => x.Similarity >= OpportunityRadarThresholds.BusinessProspectNearDuplicateSimilarity).OrderByDescending(x => x.Similarity).FirstOrDefault();
 
         var opportunity = new Opportunity
         {

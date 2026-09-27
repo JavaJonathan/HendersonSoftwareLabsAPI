@@ -68,14 +68,14 @@ public static partial class OpportunityRadarV2
             checks.Add(new("teamScale", EvaluationCheckSeverity.Review, "The requested work appears to require a team-scale or unusually broad engagement.", assessment.ConcernEvidencePassageId));
         if (assessment.CoreSystemReplacement)
             checks.Add(new("coreReplacement", EvaluationCheckSeverity.Review, "The work may require replacing a specialized core system instead of complementing it.", assessment.ConcernEvidencePassageId));
-        if (assessment.Kind.Equals("Other", StringComparison.OrdinalIgnoreCase) || assessment.KindConfidence < 0.55)
+        if (assessment.Kind.Equals("Other", StringComparison.OrdinalIgnoreCase) || assessment.KindConfidence < OpportunityRadarThresholds.ConfidenceReviewFloor)
             checks.Add(new("weakClassification", EvaluationCheckSeverity.Review, "Jev's demand classification is unknown or below 55% confidence.", Category: EvaluationCheckCategory.EvidenceGap));
         if (prefs.ExcludedProjectTypes.Contains(assessment.ProjectType, StringComparer.OrdinalIgnoreCase))
             checks.Add(new("excludedProjectType", EvaluationCheckSeverity.Block, $"{assessment.ProjectType} is excluded by the current screening preferences."));
         var budget = ParseBudget(opportunity.ActiveProjectDetail?.Budget ?? "", prefs.MinimumBudget);
         if (budget == BudgetStatus.Incompatible)
             checks.Add(new("inadequateBudget", EvaluationCheckSeverity.Block, "The stated budget is below the configured minimum."));
-        AddCommonChecks(opportunity, factors, checks, ActiveLabels);
+        AddCommonChecks(opportunity, factors, checks, ActiveLabels, NoUnsupportedExemptions);
 
         var score = WeightedScore(factors, weights);
         var factorConfidence = WeightedConfidence(factors, weights);
@@ -122,7 +122,7 @@ public static partial class OpportunityRadarV2
                 $"The sourcing agent classified this as {Label(imported)}, while Jev classified it as {Label(assessment.ProspectType)}.", Category: EvaluationCheckCategory.EvidenceGap));
         if (assessment.ProspectType == BusinessProspectType.Unknown)
             checks.Add(new("unknownType", EvaluationCheckSeverity.Review, "Jev could not determine a supported prospect type from the available evidence.", Category: EvaluationCheckCategory.EvidenceGap));
-        if (assessment.ProspectTypeConfidence < 0.55)
+        if (assessment.ProspectTypeConfidence < OpportunityRadarThresholds.ConfidenceReviewFloor)
             checks.Add(new("weakClassification", EvaluationCheckSeverity.Review, "Jev's prospect classification confidence is below 55%.", Category: EvaluationCheckCategory.EvidenceGap));
         if (assessment.SpeculativeWorkflow)
             checks.Add(new("speculativeWorkflow", EvaluationCheckSeverity.Review, "The workflow claim appears to rely mainly on industry assumptions rather than direct evidence.", assessment.ConcernEvidencePassageId));
@@ -136,7 +136,7 @@ public static partial class OpportunityRadarV2
             checks.Add(new("excludedGeography", EvaluationCheckSeverity.Block, $"{detail.Geography} is excluded by the current screening preferences."));
         var labels = digital ? DigitalLabels : OperationalLabels;
         var scoringFactors = factors.Where(x => weights.ContainsKey(x.Key)).ToDictionary();
-        AddCommonChecks(opportunity, scoringFactors, checks, labels);
+        AddCommonChecks(opportunity, scoringFactors, checks, labels, BusinessProspectUnsupportedExemptions);
 
         var score = resolvedType == BusinessProspectType.Unknown ? (decimal?)null : WeightedScore(scoringFactors, weights);
         var factorConfidence = WeightedConfidence(scoringFactors, weights);
@@ -222,25 +222,32 @@ public static partial class OpportunityRadarV2
         return decimal.Round(value, 4);
     }
 
-    private static void AddCommonChecks(Opportunity opportunity, IReadOnlyDictionary<string, JevJudgment> factors, List<EvaluationCheck> checks, IReadOnlyDictionary<string, string> labels)
+    // Factors excluded per Compose* caller from the "unsupported" check below, because their
+    // EvidencePassageId is always "none" by design rather than by evidence gap: marketAccessFit is
+    // computed locally and never asked to Jev at all; hslDeliveryFit (Business Prospect only) is a
+    // judgment about matching HSL's own capabilities, not something an observed business fact would
+    // typically demonstrate, so BusinessProspectEvaluators no longer asks Jev to cite a passage for it.
+    // Active Project's own hsl_delivery_fit still asks for and often gets a real citation (the buyer's
+    // request text usually describes the work directly), so it keeps the check.
+    private static readonly HashSet<string> NoUnsupportedExemptions = [];
+    private static readonly HashSet<string> BusinessProspectUnsupportedExemptions = ["marketAccessFit", "hslDeliveryFit"];
+
+    private static void AddCommonChecks(Opportunity opportunity, IReadOnlyDictionary<string, JevJudgment> factors, List<EvaluationCheck> checks,
+        IReadOnlyDictionary<string, string> labels, IReadOnlySet<string> unsupportedExemptions)
     {
         if (opportunity.ResearchConfidence == ResearchConfidence.Low)
             checks.Add(new("lowResearchConfidence", EvaluationCheckSeverity.Review, "The sourcing agent marked the underlying research confidence as Low.", Category: EvaluationCheckCategory.EvidenceGap));
         if (opportunity.SourceDate is { } date && date < DateTime.UtcNow.AddDays(-180))
             checks.Add(new("staleEvidence", EvaluationCheckSeverity.Review, "The primary evidence source is more than 180 days old.", Category: EvaluationCheckCategory.EvidenceGap));
-        // marketAccessFit is never asked to Jev - ComposeBusinessProspect always hands it a locally
-        // computed MarketFit() score with EvidencePassageId hardcoded to "none". Flagging it as an
-        // unsupported high-confidence Jev judgment would be noise (it always fires whenever industry or
-        // geography preferences make it score >= 2), not a real evidence gap, so it's excluded here.
-        foreach (var factor in factors.Where(x => x.Key != "marketAccessFit" && x.Value.Score >= 2 && x.Value.EvidencePassageId == "none"))
+        foreach (var factor in factors.Where(x => !unsupportedExemptions.Contains(x.Key) && x.Value.Score >= 2 && x.Value.EvidencePassageId == "none"))
             checks.Add(new($"unsupported:{factor.Key}", EvaluationCheckSeverity.Review, $"The high {labels.GetValueOrDefault(factor.Key, factor.Key)} judgment has no selected supporting passage.", Category: EvaluationCheckCategory.EvidenceGap));
     }
 
     private static void AddConfidenceChecks(decimal confidence, IReadOnlyDictionary<string, JevJudgment> factors, List<EvaluationCheck> checks, IReadOnlyDictionary<string, string> labels)
     {
-        if (confidence < 0.65m)
+        if (confidence < OpportunityRadarThresholds.OverallConfidenceFloor)
             checks.Add(new("lowJevConfidence", EvaluationCheckSeverity.Review, "Overall Jev confidence is below 65%.", Category: EvaluationCheckCategory.EvidenceGap));
-        foreach (var factor in factors.Where(x => x.Value.Confidence < 0.55))
+        foreach (var factor in factors.Where(x => x.Value.Confidence < OpportunityRadarThresholds.ConfidenceReviewFloor))
             checks.Add(new($"lowConfidence:{factor.Key}", EvaluationCheckSeverity.Review, $"Jev confidence for {labels.GetValueOrDefault(factor.Key, factor.Key)} is below 55%.", factor.Value.EvidencePassageId, EvaluationCheckCategory.EvidenceGap));
     }
 
@@ -280,7 +287,8 @@ public static partial class OpportunityRadarV2
         factors.Select(x => new RadarFactor(x.Key, labels.GetValueOrDefault(x.Key, x.Key), Math.Round(x.Value.Score / 3d * 100d, 1),
             x.Value.EvidencePassageId, $"Jev scored this factor at {Math.Round(x.Value.Score, 2)} out of 3 with {Math.Round(x.Value.Confidence * 100)}% confidence.")).ToList();
 
-    private static PriorityBand Priority(decimal score) => score >= 75 ? PriorityBand.High : score >= 55 ? PriorityBand.Medium : PriorityBand.Low;
+    private static PriorityBand Priority(decimal score) => score >= OpportunityRadarThresholds.HighPriorityScore ? PriorityBand.High
+        : score >= OpportunityRadarThresholds.MediumPriorityScore ? PriorityBand.Medium : PriorityBand.Low;
 
     private static double MarketFit(BusinessProspectDetail detail, BusinessProspectPreferences prefs)
     {
