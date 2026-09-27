@@ -84,6 +84,20 @@ Check(businessProspectPassages.Select(x => x.Id).SequenceEqual(["fact-1", "fact-
     && businessProspectPassages[1].Source is null,
     "Business Prospect passages must carry each fact's own source and date.");
 
+// The sourcing agent's optional evidence category tag (see EvidenceFact.Category) must survive both
+// BuildBusinessProspectPassages and a serialize/deserialize round trip through SourcePassagesJson.
+var categorizedFacts = new EvidenceFact[]
+{
+    new("A stated Q1 compliance deadline drives urgency.", null, null, "urgency"),
+    new("General background with no clear signal.", null, null)
+};
+var categorizedPassages = OpportunityRadarEngine.BuildBusinessProspectPassages(categorizedFacts);
+Check(categorizedPassages[0].Category == "urgency" && categorizedPassages[1].Category is null,
+    "BuildBusinessProspectPassages must carry each fact's category through, defaulting to null when omitted.");
+var roundTrippedPassages = OpportunityRadarEngine.DeserializePassages(OpportunityRadarEngine.SerializePassages(categorizedPassages));
+Check(roundTrippedPassages[0].Category == "urgency" && roundTrippedPassages[1].Category is null,
+    "A passage's category must survive a SerializePassages/DeserializePassages round trip.");
+
 var activeDescription = OpportunityRadarEngine.ComposeActiveProjectDescription(new ActiveProjectImportRequest(
     "Title", "The request text.", Budget: "$5,000", Risk: "Scope could grow."));
 Check(activeDescription.Contains("Request:\nThe request text.") && activeDescription.Contains("Budget:\n$5,000")
@@ -106,6 +120,22 @@ validationResults.Clear();
 var validRequest = new BusinessProspectImportRequest("Business", facts);
 Check(Validator.TryValidateObject(validRequest, new ValidationContext(validRequest), validationResults, true),
     "Combined evidence within budget must pass validation.");
+
+// A validation attribute given directly on a record's positional parameter (no "property:" target
+// specifier) attaches to the constructor parameter only, not the generated property - confirmed by
+// reflecting over both and finding the attribute solely on the parameter. Validator.TryValidateObject
+// reflects over properties (via TypeDescriptor), so it can never see it here regardless of which
+// object is passed in; ASP.NET Core's [ApiController] pipeline uses record-aware model metadata that
+// does see it (verified separately against a live minimal host: a bad Category on Evidence[0] comes
+// back as a 400 naming that exact field). So the attribute itself is checked directly instead.
+var categoryParameter = typeof(EvidenceFact).GetConstructors()[0].GetParameters().Single(p => p.Name == "Category");
+var allowedCategories = categoryParameter.GetCustomAttributes(typeof(AllowedValuesAttribute), false).Cast<AllowedValuesAttribute>().Single();
+Check(!allowedCategories.IsValid("buyerContact"), "A category outside the fixed enum must fail validation.");
+Check(allowedCategories.IsValid("buyerAccess"), "A category from the fixed enum must pass validation.");
+// AllowedValuesAttribute does not treat null as automatically valid the way most ValidationAttributes
+// do, so null must be listed explicitly - confirmed against a live [ApiController] host that an import
+// with no category field at all was rejected with a 400 until this was added.
+Check(allowedCategories.IsValid(null), "An omitted category must still pass validation.");
 
 // Budget now comes from an explicit field instead of a regex over free text.
 var budgetOpportunity = MakeActiveProject("Budget test", "A contained integration project.", "$1,000");
@@ -308,6 +338,15 @@ var differentPreferences = MakePreferences(excludedIndustries: ["SomethingElseEn
 Check(prospectJev.EstimateMaximumInputTokens(prospectOpportunity, preferences)
       == prospectJev.EstimateMaximumInputTokens(prospectOpportunity, differentPreferences),
     "Business Prospect Jev requests must not depend on local preferences.");
+
+// BuildRequestJson must surface each passage's category tag inline as a hint for Jev, since that is
+// what lets a categorized fact actually influence which passage Jev cites for a given factor.
+var categorizedOpportunity = MakeBusinessProspect("Category Test", "placeholder", "HomeServices", "Local");
+categorizedOpportunity.SourcePassagesJson = OpportunityRadarEngine.SerializePassages(
+    OpportunityRadarEngine.BuildBusinessProspectPassages([new EvidenceFact("A stated Q1 deadline drives urgency.", null, null, "urgency")]));
+var categoryRequestJson = prospectJev.BuildRequestJson(categorizedOpportunity, preferences);
+Check(categoryRequestJson.Contains("[urgency] A stated Q1 deadline drives urgency.", StringComparison.Ordinal),
+    "BuildRequestJson must prefix a passage's text with its sourcing-agent category tag.");
 
 // pain_evidence was split into pain_cost_severity/pain_frequency and must be combined back into one
 // painEvidence factor: the score averages the two sub-questions, and the cited evidence comes from

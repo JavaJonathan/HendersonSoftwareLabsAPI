@@ -40,14 +40,14 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
     {
         var passages = OpportunityRadarEngine.DeserializePassages(opportunity.SourcePassagesJson);
         var evidenceCriteria = new Dictionary<string, object?> { ["none"] = "No passage directly supports the judgment." };
-        foreach (var passage in passages) evidenceCriteria[passage.Id] = passage.Text;
+        foreach (var passage in passages) evidenceCriteria[passage.Id] = Describe(passage);
         var detail = opportunity.BusinessProspectDetail;
         var state = new
         {
             business_name = opportunity.Title,
             industry = detail?.Industry,
             geography = detail?.Geography,
-            passages = passages.ToDictionary(x => x.Id, x => x.Text)
+            passages = passages.ToDictionary(x => x.Id, Describe)
         };
         var fourPoint = new[] { "No evidence", "Weak or ambiguous", "Useful initial evidence", "Clear and concrete" };
         var questions = new Dictionary<string, object>
@@ -131,4 +131,10 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
 
     private static JevJudgment Judgment(JsonElement answers, string key, HashSet<string> passageIds) =>
         new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), ValidateEvidenceChoice(answers, $"{key}_passage", passageIds));
+
+    // Surfaces the sourcing agent's own category tag (see EvidenceFact.Category) inline with the passage
+    // text, so Jev has an explicit hint for which factor a passage was collected for. It's a hint, not a
+    // filter - every passage is still offered for every factor, and Jev is free to disagree with the tag.
+    private static string Describe(RadarPassage passage) =>
+        string.IsNullOrWhiteSpace(passage.Category) ? passage.Text : $"[{passage.Category}] {passage.Text}";
 }

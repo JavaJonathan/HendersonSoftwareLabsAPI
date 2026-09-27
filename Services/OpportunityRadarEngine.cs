@@ -7,7 +7,7 @@ using HendersonSoftwareLabsAPI.Entities;
 
 namespace HendersonSoftwareLabsAPI.Services;
 
-public record RadarPassage(string Id, string Text, string? Source = null, DateTime? Date = null);
+public record RadarPassage(string Id, string Text, string? Source = null, DateTime? Date = null, string? Category = null);
 public record RadarFactor(string Key, string Label, double Score, string EvidencePassageId, string Explanation);
 public record EvaluationCheck(string Key, EvaluationCheckSeverity Severity, string Explanation, string EvidencePassageId = "none",
     EvaluationCheckCategory Category = EvaluationCheckCategory.Concern);
@@ -66,7 +66,8 @@ public static class OpportunityRadarEngine
 
     public static List<RadarPassage> BuildBusinessProspectPassages(IReadOnlyList<EvidenceFact> facts) =>
         facts.Select((fact, index) => new RadarPassage($"fact-{index + 1}", fact.Fact.Trim(),
-            string.IsNullOrWhiteSpace(fact.Source) ? null : fact.Source.Trim(), fact.Date)).ToList();
+            string.IsNullOrWhiteSpace(fact.Source) ? null : fact.Source.Trim(), fact.Date,
+            string.IsNullOrWhiteSpace(fact.Category) ? null : fact.Category.Trim())).ToList();
 
     public static string ComposeActiveProjectDescription(ActiveProjectImportRequest request) => string.Join("\n\n",
         new[]

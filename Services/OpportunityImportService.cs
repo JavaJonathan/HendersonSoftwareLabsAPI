@@ -6,10 +6,18 @@ using Microsoft.EntityFrameworkCore;
 
 namespace HendersonSoftwareLabsAPI.Services;
 
+// Category's allowed values are the factor keys BusinessProspectEvaluators.BuildRequestJson scores
+// against, and must be kept in sync with EVIDENCE_CATEGORY_PROPERTY's enum in the UI repo's
+// opportunityJsonTemplates.ts and the BusinessProspectEvidenceCategory type in opportunities.ts.
 public record EvidenceFact(
     [Required, StringLength(2000, MinimumLength = 1)] string Fact,
     [StringLength(1000)] string? Source,
-    DateTime? Date);
+    DateTime? Date,
+    [StringLength(50), AllowedValues(
+        null, "painCostSeverity", "painFrequency", "automationFeasibility", "economicLeverage",
+        "containedEngagement", "urgency", "hslDeliveryFit", "buyerAccess",
+        "businessStrength", "digitalWeakness", "reputationMismatch", "entryProjectStrength", "general")]
+    string? Category = null);
 
 public record CompetitionInfo(
     [StringLength(100)] string? Proposals,
