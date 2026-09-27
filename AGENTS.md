@@ -132,9 +132,9 @@ Live batches require a fresh server-generated preview confirmation. Defaults are
 
 ## Opportunity Radar: reviewed HSL business profile (2026-09-27)
 
-`RadarPreferences.BusinessProfileJson` stores a per-admin, editable HSL business profile. The seeded profile is an inactive draft synthesized from Jonathan's business-planning conversations, and the deployed API never reads ChatGPT history or memory. When active, the profile enters both Jev request types for HSL-relative judgments only. It must never be treated as evidence of buyer pain, urgency, budget, access, or ROI.
+`RadarPreferences.BusinessProfileJson` stores a per-admin, editable HSL business profile, including `Capabilities` (the tech/offering tag list `hsl_delivery_fit` grounds against). The seeded content is synthesized from Jonathan's business-planning conversations, and the deployed API never reads ChatGPT history or memory. There is no draft/active toggle: the profile always shapes both Jev request types for HSL-relative judgments, so it should be kept accurate. It must never be treated as evidence of buyer pain, urgency, budget, access, or ROI. Capabilities are sent to Jev as their own named `hsl_capabilities` field (not nested inside `hsl_business_profile`), since both evaluators' prompts refer to it explicitly.
 
-An active profile's canonical content hash is appended to the effective Jev question-set version. Activating, disabling, or materially editing active content marks every latest Ready Jev result Stale. Editing an inactive draft or changing only `LastReviewedAt` does not. `AddRadarBusinessProfile` is additive and must not be applied outside a disposable local database or production without Jonathan's explicit approval.
+The profile's canonical content hash is always appended to the effective Jev question-set version, since the profile always shapes the prompt. Any material edit marks every latest Ready Jev result Stale (`OpportunityRadarEngine.BusinessProfileDigest`); changing only `LastReviewedAt` does not, since it isn't part of the hashed context. `AddRadarBusinessProfile` is additive and must not be applied outside a disposable local database or production without Jonathan's explicit approval.
 
 ## Opportunity Radar: split into ActiveProject / BusinessProspect (2026-09-21)
 
