@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using HendersonSoftwareLabsAPI.Entities;
 
@@ -175,7 +176,15 @@ public static class OpportunityRadarEngine
         string[]? PreferredGeographies,
         string[]? ExcludedGeographies);
 
+    // Both need a string-enum converter: without one, System.Text.Json writes enums (EvaluationCheckSeverity,
+    // EvaluationCheckCategory, BusinessProspectType, etc.) embedded in these JSON blobs as their raw numeric
+    // value, silently breaking the frontend's severity === 'Review' style comparisons (they'd always see a
+    // number, never the string TypeScript's contract promises). JsonStringEnumConverter's reader still accepts
+    // a bare number too, so this stays backward compatible with rows written before this fix - see
+    // EvaluationCheckSeverityJsonRoundTrip in tests/OpportunityRadar.Unit for both directions.
     // internal so OpportunityRadarV2 shares these instead of allocating its own copies.
-    internal static readonly JsonSerializerOptions CaseInsensitiveOptions = new() { PropertyNameCaseInsensitive = true };
-    internal static readonly JsonSerializerOptions CamelCaseOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    internal static readonly JsonSerializerOptions CaseInsensitiveOptions =
+        new() { PropertyNameCaseInsensitive = true, Converters = { new JsonStringEnumConverter() } };
+    internal static readonly JsonSerializerOptions CamelCaseOptions =
+        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Converters = { new JsonStringEnumConverter() } };
 }

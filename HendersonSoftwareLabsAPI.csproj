@@ -14,6 +14,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets tests/OpportunityRadar.Unit exercise the actual internal JSON options (CamelCaseOptions/
+         CaseInsensitiveOptions) instead of a hand-rolled stand-in that could drift from the real ones. -->
+    <InternalsVisibleTo Include="OpportunityRadar.Unit" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.19" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="9.0.19" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.11" />

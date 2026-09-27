@@ -24,7 +24,7 @@ public static class OpportunityRadarReporting
             RadarResult? result = null;
             if (evaluation is { Status: not EvaluationStatus.Failed })
             {
-                try { result = JsonSerializer.Deserialize<RadarResult>(evaluation.ResultJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+                try { result = JsonSerializer.Deserialize<RadarResult>(evaluation.ResultJson, OpportunityRadarEngine.CaseInsensitiveOptions); }
                 catch (JsonException) { }
             }
             var isActiveProject = opportunity.EntityType == OpportunityEntityType.ActiveProject;

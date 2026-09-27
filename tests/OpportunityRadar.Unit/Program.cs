@@ -354,6 +354,22 @@ Check(OpportunityImportService.ParseProspectType("OperationalPain") == BusinessP
     "An explicit prospect type value must still parse.");
 Check(OpportunityImportService.ParseProspectType(null) is null, "An omitted prospect type must resolve to null, not throw.");
 
+// Regression: EvaluationCheckSeverity (and the other enums embedded in ResultJson) used to serialize as a
+// raw number, so the frontend's `check.severity === 'Review'` comparison against the TypeScript string
+// union was always false and every check silently rendered as "Info". CamelCaseOptions/CaseInsensitiveOptions
+// now carry a JsonStringEnumConverter; check both the new write shape and that rows already stored under
+// the old numeric format still deserialize correctly (the converter's reader accepts either).
+var severityJson = JsonSerializer.Serialize(
+    new EvaluationCheck("physicalOrJudgmentHeavy", EvaluationCheckSeverity.Review, "explanation", "none"),
+    OpportunityRadarEngine.CamelCaseOptions);
+Check(severityJson.Contains("\"severity\":\"Review\"", StringComparison.Ordinal),
+    "EvaluationCheckSeverity must serialize as its string name, not a raw number, or the frontend's severity === 'Review' comparisons silently always fail.");
+var legacyNumericCheck = JsonSerializer.Deserialize<EvaluationCheck>(
+    """{"key":"physicalOrJudgmentHeavy","severity":1,"explanation":"explanation","evidencePassageId":"none"}""",
+    OpportunityRadarEngine.CaseInsensitiveOptions);
+Check(legacyNumericCheck?.Severity == EvaluationCheckSeverity.Review,
+    "Rows evaluated before the string-enum fix stored severity as a raw number; those must keep deserializing correctly.");
+
 if (string.Equals(Environment.GetEnvironmentVariable("RADAR_RUN_LIVE_CONTRACT"), "true", StringComparison.OrdinalIgnoreCase))
 {
     var liveKey = Environment.GetEnvironmentVariable("TYPESAFE_API_KEY") ?? Environment.GetEnvironmentVariable("TypeSafe__ApiKey");
