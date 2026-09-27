@@ -130,6 +130,12 @@ Live batches require a fresh server-generated preview confirmation. Defaults are
 
 `GET /api/admin/opportunity-radar/export` excludes synthetic records unless `includeSynthetic=true`. It quotes every field, doubles embedded quotes, replaces control characters, and neutralizes leading ASCII and full-width formula characters without mutating stored data. Keep all imported and user-written fields on this sanitizer path. Focused tests cover formula prefixes, tabs, line breaks, quote breakout, Unicode variants, keyword misses, keyword false positives, and admin authorization.
 
+## Opportunity Radar: reviewed HSL business profile (2026-09-27)
+
+`RadarPreferences.BusinessProfileJson` stores a per-admin, editable HSL business profile, including `Capabilities` (the tech/offering tag list `hsl_delivery_fit` grounds against). The seeded content is synthesized from Jonathan's business-planning conversations, and the deployed API never reads ChatGPT history or memory. There is no draft/active toggle: the profile always shapes both Jev request types for HSL-relative judgments, so it should be kept accurate. It must never be treated as evidence of buyer pain, urgency, budget, access, or ROI. Capabilities are sent to Jev as their own named `hsl_capabilities` field (not nested inside `hsl_business_profile`), since both evaluators' prompts refer to it explicitly.
+
+The profile's canonical content hash is always appended to the effective Jev question-set version, since the profile always shapes the prompt. Any material edit marks every latest Ready Jev result Stale (`OpportunityRadarEngine.BusinessProfileDigest`); changing only `LastReviewedAt` does not, since it isn't part of the hashed context. `AddRadarBusinessProfile` is additive and must not be applied outside a disposable local database or production without Jonathan's explicit approval.
+
 ## Opportunity Radar: split into ActiveProject / BusinessProspect (2026-09-21)
 
 Checkpoints 1-3 above shipped a single opportunity model. Before any migration was ever applied, that model was split into two entity types sharing one `Opportunity` table plus type-specific detail tables (`ActiveProjectDetail`, `BusinessProspectDetail`, both keyed 1:1 on `OpportunityId`) - table-splitting, not EF inheritance, matching this codebase's flat-POCO convention everywhere else. `Opportunity.EntityType` (`ActiveProject`/`BusinessProspect`) is the discriminant; `OpportunitySourceType`/`OpportunityKind` were retired (`WebsiteOpportunity` *is* `EntityType.BusinessProspect` now).

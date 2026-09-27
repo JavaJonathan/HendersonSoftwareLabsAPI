@@ -40,6 +40,10 @@ Provider failures create an explicit failed evaluation record. They do not erase
 
 Budget, scope, exclusions, and weight changes append immutable `LocalRecompose` evaluations from the latest valid Jev judgments. Capability changes can alter the Jev request, so Active Project evaluations become stale and require reevaluation. Saving only digest counts does not add evaluation history.
 
+The HSL business profile is a reviewed, editable snapshot of positioning, ideal clients, offers, delivery capabilities, engagement constraints, geography, and approved price bands. It is seeded as an inactive draft and never reads ChatGPT conversations at runtime. When active, it is included only to help Jev interpret HSL-relative questions such as delivery fit, contained scope, entry-project strength, and commercial compatibility. It is not evidence of a prospect's pain, urgency, budget, buyer access, or ROI.
+
+Activating, disabling, or materially editing the active profile marks existing Ready Jev evaluations Stale. Editing an inactive draft or changing only its review date does not. The effective question-set version includes a short digest of active profile content so exports and evaluation history retain the exact prompt provenance.
+
 Active Project, Operational Pain, and Digital Presence each have independent relative weights. Hybrid prospects use the Operational Pain profile. Values are normalized to 100 before scoring. An all-zero group falls back to versioned defaults. Every evaluation stores its effective normalized profile.
 
 ## Verification
@@ -62,7 +66,7 @@ The ordinary test run never calls TypeSafe. The live contract should only be run
 
 ## Current limits
 
-The application does not crawl websites, send outreach, or claim Jev probabilities are win probabilities. It stores Jev probabilities, per-answer confidence, Noul probabilities, selected passages, resolved model, and usage. Imported research confidence, reason, agent identity, and prospect type remain separate and are never sent to Jev. There is no live external ingestion API; agent-produced findings arrive as CSV or paste imports.
+The application does not crawl websites, send outreach, or claim Jev probabilities are win probabilities. It stores Jev probabilities, per-answer confidence, Noul probabilities, selected passages, resolved model, and usage. Imported research confidence, reason, agent identity, and prospect type remain separate and are never sent to Jev. The reviewed HSL business profile may be sent when active, but it remains separate from prospect evidence. There is no live external ingestion API; agent-produced findings arrive as CSV or paste imports.
 
 Re-importing a record matches an existing one in this priority order: an exact `ExternalId` match (same entity type and synthetic flag) first, when the import supplies one; otherwise ActiveProject falls back to an exact content fingerprint (title, description, and source URL, so any rewording creates a new record instead), and BusinessProspect falls back to an exact website-domain match when a domain is present, or an exact business-name match when it is not. A match updates the existing row's source material in place (including its title and, for ActiveProject, its fingerprint) and never overwrites a decision or notes a human already recorded, but it does mark any prior `Ready` evaluation `Stale`, since it was computed from text that no longer exists.
 

@@ -7,16 +7,16 @@ namespace HendersonSoftwareLabsAPI.Services;
 public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevBusinessProspectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-business-prospect-jev-v5";
+    public const string QuestionSetVersion = "radar-business-prospect-jev-v8";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.BusinessProspect;
 
     public override int EstimateMaximumInputTokens(Opportunity opportunity, RadarPreferences preferences)
         => Encoding.UTF8.GetByteCount(BuildRequestJson(opportunity, preferences));
 
-    // State is deliberately business_name/industry/geography/passages only - no preferences-derived
-    // fields. That means no BusinessProspect preference change can ever make a live Jev result
-    // stale; every preference change here is pure post-hoc scoring recompose.
+    // Screening preferences remain post-hoc scoring inputs. The HSL business profile (capabilities
+    // included) always enters the provider request, there is no draft/inactive state - changing it
+    // makes prior results stale (see OpportunityRadarController.UpdatePreferences).
     public override async Task<OpportunityEvaluationOutcome> EvaluateAsync(Opportunity opportunity, RadarPreferences preferences, CancellationToken ct)
     {
         var requestJson = BuildRequestJson(opportunity, preferences);
@@ -27,7 +27,8 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             var result = OpportunityRadarV2.ComposeBusinessProspect(opportunity, preferences, parsed.Assessment);
             logger.LogInformation("Jev evaluation completed for opportunity {OpportunityId} with model {Model}, input tokens {InputTokens}, output tokens {OutputTokens}",
                 opportunity.Id, parsed.Model, parsed.InputTokens, parsed.OutputTokens);
-            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarV2.Serialize(parsed.Assessment), result,
+            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarEngine.EffectiveQuestionSetVersion(QuestionSetVersion, preferences),
+                OpportunityRadarV2.Serialize(parsed.Assessment), result,
                 responseJson, parsed.InputTokens, parsed.OutputTokens);
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException or KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
@@ -42,14 +43,17 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
         var evidenceCriteria = new Dictionary<string, object?> { ["none"] = "No passage directly supports the judgment." };
         foreach (var passage in passages) evidenceCriteria[passage.Id] = Describe(passage);
         var detail = opportunity.BusinessProspectDetail;
-        var state = new
+        var state = new Dictionary<string, object?>
         {
-            business_name = opportunity.Title,
-            industry = detail?.Industry,
-            geography = detail?.Geography,
-            passages = passages.ToDictionary(x => x.Id, Describe)
+            ["business_name"] = opportunity.Title,
+            ["industry"] = detail?.Industry,
+            ["geography"] = detail?.Geography,
+            ["passages"] = passages.ToDictionary(x => x.Id, Describe),
+            ["hsl_capabilities"] = OpportunityRadarEngine.ReadCapabilities(preferences),
+            ["hsl_business_profile"] = OpportunityRadarEngine.ReadBusinessProfileContext(preferences)
         };
         var fourPoint = new[] { "No evidence", "Weak or ambiguous", "Useful initial evidence", "Clear and concrete" };
+        const string profileRule = " Use hsl_business_profile to understand HSL's actual offers, delivery model, constraints, and price bands. It is business context, not evidence that this prospect has a need. Keep confidence low when prospect evidence is missing.";
         var questions = new Dictionary<string, object>
         {
             ["prospect_type"] = Choice(
@@ -67,9 +71,9 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             ["pain_frequency_passage"] = Choice("Choose the passage that best supports the pain_frequency score. Choose none when unsupported.", evidenceCriteria),
             ["automation_feasibility"] = Score("How feasible is a narrow software, automation, or integration response without replacing a core system?", fourPoint),
             ["automation_feasibility_passage"] = Choice("Choose the passage that best supports the automation_feasibility score. Choose none when unsupported.", evidenceCriteria),
-            ["economic_leverage"] = Score("How plausible is meaningful economic leverage? Do not treat a full salary as recoverable savings or invent ROI.", fourPoint),
+            ["economic_leverage"] = Score("How plausible is meaningful economic leverage? Do not treat a full salary as recoverable savings or invent ROI." + profileRule, fourPoint),
             ["economic_leverage_passage"] = Choice("Choose the passage that best supports the economic_leverage score. Choose none when unsupported.", evidenceCriteria),
-            ["contained_engagement"] = Score("How plausible is a contained first engagement HSL could deliver?", fourPoint),
+            ["contained_engagement"] = Score("How plausible is a contained first engagement HSL could deliver?" + profileRule, fourPoint),
             ["contained_engagement_passage"] = Choice("Choose the passage that best supports the contained_engagement score. Choose none when unsupported.", evidenceCriteria),
             ["urgency"] = Score("How strong is the direct evidence of urgency or favorable timing?", fourPoint),
             ["urgency_passage"] = Choice("Choose the passage that best supports the urgency score. Choose none when unsupported.", evidenceCriteria),
@@ -78,7 +82,7 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             // for a citation here just made Jev cite a weak passage or, more often, cite none while still
             // scoring high from general context - triggering an "unsupported" check that was noise, not
             // signal (see AddCommonChecks in OpportunityRadarV2.cs).
-            ["hsl_delivery_fit"] = Score("How well does the opportunity fit a small custom-software consultancy focused on integrations, automation, portals, reporting, and web applications?", fourPoint),
+            ["hsl_delivery_fit"] = Score("How well does the opportunity fit the listed hsl_capabilities?" + profileRule, fourPoint),
             ["buyer_access"] = Score("How reachable and identifiable is a likely buyer or decision-maker?", fourPoint),
             ["buyer_access_passage"] = Choice("Choose the passage that best supports the buyer_access score. Choose none when unsupported.", evidenceCriteria),
             ["business_strength"] = Score("How established does the business appear from real-world signals? Judge the business, not its website.", fourPoint),
@@ -87,7 +91,7 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             ["digital_weakness_passage"] = Choice("Choose the passage that best supports the digital_weakness score. Choose none when unsupported.", evidenceCriteria),
             ["reputation_mismatch"] = Score("How large is the gap between real-world reputation and the digital presence?", fourPoint),
             ["reputation_mismatch_passage"] = Choice("Choose the passage that best supports the reputation_mismatch score. Choose none when unsupported.", evidenceCriteria),
-            ["entry_project_strength"] = Score("How plausible and well-scoped is a first digital-presence engagement?", fourPoint),
+            ["entry_project_strength"] = Score("How plausible and well-scoped is a first digital-presence engagement?" + profileRule, fourPoint),
             ["entry_project_strength_passage"] = Choice("Choose the passage that best supports the entry_project_strength score. Choose none when unsupported.", evidenceCriteria),
             ["speculative_workflow"] = Noul("Are the claimed workflow problems supported mainly by industry assumptions rather than direct observed evidence?"),
             ["physical_or_judgment_heavy"] = Noul("Is the work primarily physical, relationship-based, judgment-heavy, or dominated by unpredictable exceptions?"),

@@ -133,6 +133,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.Property(x => x.OwnerUserId).HasMaxLength(450);
             entity.Property(x => x.ActiveProjectPreferencesJson).HasColumnType("jsonb");
             entity.Property(x => x.BusinessProspectPreferencesJson).HasColumnType("jsonb");
+            entity.Property(x => x.BusinessProfileJson).HasColumnType("jsonb");
             entity.HasIndex(x => x.OwnerUserId).IsUnique();
             entity.HasOne(x => x.OwnerUser).WithMany().HasForeignKey(x => x.OwnerUserId).OnDelete(DeleteBehavior.Cascade);
         });

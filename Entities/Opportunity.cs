@@ -114,6 +114,7 @@ public class RadarPreferences
     public ApplicationUser OwnerUser { get; set; } = null!;
     public string ActiveProjectPreferencesJson { get; set; } = "{}";
     public string BusinessProspectPreferencesJson { get; set; } = "{}";
+    public string BusinessProfileJson { get; set; } = "{}";
     public int DigestActiveProjectCount { get; set; } = 3;
     public int DigestBusinessProspectCount { get; set; } = 2;
     public DateTime UpdatedAt { get; set; }

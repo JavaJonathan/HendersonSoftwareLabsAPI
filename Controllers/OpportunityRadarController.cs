@@ -22,13 +22,17 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public record EvaluationPreviewRequest(int[]? OpportunityIds);
     public record ReviewRequest(string? Decision, [StringLength(5000)] string Notes);
     public record ProspectTypeOverrideRequest(string? ProspectType);
-    public record ActiveProjectPreferencesRequest(string[] Capabilities, string[] PreferredProjectTypes, string[] ExcludedProjectTypes,
+    public record ActiveProjectPreferencesRequest(string[] PreferredProjectTypes, string[] ExcludedProjectTypes,
         decimal MinimumBudget, string IncompleteInformationTolerance, Dictionary<string, decimal>? WeightsV2);
     public record BusinessProspectPreferencesRequest(string[] PreferredIndustries, string[] ExcludedIndustries,
         string[] PreferredGeographies, string[] ExcludedGeographies, Dictionary<string, decimal>? OperationalPainWeights,
         Dictionary<string, decimal>? DigitalPresenceWeights);
+    public record BusinessProfileRequest(string Positioning, string BusinessModel,
+        string[] IdealCustomerTraits, string[] CoreOffers, string[] SecondaryOffers, string[] Capabilities,
+        string[] EngagementModel, string[] CapacityConstraints, string[] GeographicFocus, string[] PriceBands,
+        DateTime? LastReviewedAt);
     public record PreferencesRequest(ActiveProjectPreferencesRequest ActiveProject, BusinessProspectPreferencesRequest BusinessProspect,
-        int DigestActiveProjectCount = 3, int DigestBusinessProspectCount = 2);
+        int DigestActiveProjectCount = 3, int DigestBusinessProspectCount = 2, BusinessProfileRequest? BusinessProfile = null);
 
     [HttpGet]
     public async Task<IActionResult> List(string entityType = "All", string recommendation = "All", string sourceType = "All",
@@ -414,7 +418,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 item.Opportunity.Evaluations.Add(new OpportunityEvaluation
                 {
                     Provider = provider, Status = EvaluationStatus.Failed, Model = "jev-latest",
-                    QuestionSetVersion = questionSetVersion,
+                    QuestionSetVersion = OpportunityRadarEngine.EffectiveQuestionSetVersion(questionSetVersion, preferences),
                     ErrorMessage = item.Error?.Message ?? "Evaluation failed.", CreatedAt = DateTime.UtcNow
                 });
             }
@@ -499,29 +503,28 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     [HttpPut("preferences")]
     public async Task<IActionResult> UpdatePreferences(PreferencesRequest request, CancellationToken ct)
     {
-        if (request.ActiveProject.Capabilities.Length is < 1 or > 30 || request.ActiveProject.MinimumBudget < 0
+        if (request.ActiveProject.MinimumBudget < 0
             || !Enum.TryParse<IncompleteInformationTolerance>(request.ActiveProject.IncompleteInformationTolerance, out var parsedTolerance) || !Enum.IsDefined(parsedTolerance)
             || !ValidWeights(request.ActiveProject.WeightsV2, OpportunityRadarV2.ActiveDefaults.Keys)
             || !ValidWeights(request.BusinessProspect.OperationalPainWeights, OpportunityRadarV2.OperationalDefaults.Keys)
             || !ValidWeights(request.BusinessProspect.DigitalPresenceWeights, OpportunityRadarV2.DigitalDefaults.Keys)
+            || request.BusinessProfile is { } suppliedProfile && !ValidBusinessProfile(suppliedProfile)
             || request.DigestActiveProjectCount is < 0 or > 25 || request.DigestBusinessProspectCount is < 0 or > 25)
             return BadRequest(new { message = "Invalid screening preferences." });
 
         var preferences = await GetOrCreatePreferences(ct);
-        var oldActiveProjectPreferences = OpportunityRadarEngine.ReadActiveProjectPreferences(preferences);
+        var oldCapabilities = OpportunityRadarEngine.ReadCapabilities(preferences);
+        var oldBusinessProfileDigest = OpportunityRadarEngine.BusinessProfileDigest(preferences);
         var oldActiveJson = preferences.ActiveProjectPreferencesJson;
         var oldBusinessJson = preferences.BusinessProspectPreferencesJson;
         preferences.ActiveProjectPreferencesJson = JsonSerializer.Serialize(new
         {
-            capabilities = request.ActiveProject.Capabilities.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase),
             preferredProjectTypes = request.ActiveProject.PreferredProjectTypes.Distinct(StringComparer.OrdinalIgnoreCase),
             excludedProjectTypes = request.ActiveProject.ExcludedProjectTypes.Distinct(StringComparer.OrdinalIgnoreCase),
             minimumBudget = request.ActiveProject.MinimumBudget,
             incompleteInformationTolerance = request.ActiveProject.IncompleteInformationTolerance,
             weightsV2 = request.ActiveProject.WeightsV2
         });
-        var newActiveProjectPreferences = OpportunityRadarEngine.ReadActiveProjectPreferences(preferences);
-        var capabilitiesChanged = !SetsEqual(oldActiveProjectPreferences.Capabilities, newActiveProjectPreferences.Capabilities);
         var activeProjectPreferencesChanged = oldActiveJson != preferences.ActiveProjectPreferencesJson;
 
         preferences.BusinessProspectPreferencesJson = JsonSerializer.Serialize(new
@@ -534,6 +537,17 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             digitalPresenceWeights = request.BusinessProspect.DigitalPresenceWeights
         });
         var businessProspectPreferencesChanged = oldBusinessJson != preferences.BusinessProspectPreferencesJson;
+        if (request.BusinessProfile is { } businessProfile)
+        {
+            preferences.BusinessProfileJson = JsonSerializer.Serialize(new HslBusinessProfile(
+                businessProfile.Positioning.Trim(), businessProfile.BusinessModel.Trim(),
+                Clean(businessProfile.IdealCustomerTraits), Clean(businessProfile.CoreOffers), Clean(businessProfile.SecondaryOffers),
+                Clean(businessProfile.Capabilities), Clean(businessProfile.EngagementModel), Clean(businessProfile.CapacityConstraints),
+                Clean(businessProfile.GeographicFocus), Clean(businessProfile.PriceBands), businessProfile.LastReviewedAt),
+                OpportunityRadarEngine.CamelCaseOptions);
+        }
+        var businessProfilePromptChanged = oldBusinessProfileDigest != OpportunityRadarEngine.BusinessProfileDigest(preferences);
+        var capabilitiesChanged = !SetsEqual(oldCapabilities, OpportunityRadarEngine.ReadCapabilities(preferences));
         preferences.DigestActiveProjectCount = request.DigestActiveProjectCount;
         preferences.DigestBusinessProspectCount = request.DigestBusinessProspectCount;
         preferences.UpdatedAt = DateTime.UtcNow;
@@ -556,12 +570,14 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             var latest = opportunity.Evaluations.OrderByDescending(x => x.CreatedAt).FirstOrDefault();
             if (latest is null || latest.Provider != EvaluationProvider.Jev || latest.Status != EvaluationStatus.Ready) continue;
 
-            // Only ActiveProject capability changes can make a live Jev result stale: capabilities feed
-            // the ActiveProject Jev prompt (hsl_capabilities). Nothing in the BusinessProspect Jev prompt
-            // is preference-derived, so BusinessProspect preference changes always recompose locally.
-            if (opportunity.EntityType == OpportunityEntityType.ActiveProject && capabilitiesChanged)
+            if (businessProfilePromptChanged)
             {
-                AppendStale(opportunity, latest, "Capability preferences changed. Run Jev again before relying on this evaluation.");
+                AppendStale(opportunity, latest, "The HSL business profile changed. Run Jev again before relying on this evaluation.");
+                continue;
+            }
+            if (capabilitiesChanged)
+            {
+                AppendStale(opportunity, latest, "Shared HSL capabilities changed. Run Jev again before relying on this evaluation.");
                 continue;
             }
             var relevantChanged = opportunity.EntityType == OpportunityEntityType.ActiveProject
@@ -625,7 +641,6 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             OwnerUserId = userId,
             ActiveProjectPreferencesJson = JsonSerializer.Serialize(new
             {
-                capabilities = new[] { ".NET", "C#", "React", "TypeScript", "SQL", "PostgreSQL", "REST APIs", "AWS" },
                 preferredProjectTypes = new[] { "Integration", "Automation", "InternalTool", "Reporting", "Portal", "ExistingSoftware" },
                 excludedProjectTypes = new[] { "FullTimeEmployment", "EquityOnly", "Unpaid" },
                 minimumBudget = 2500m, incompleteInformationTolerance = "Medium",
@@ -638,6 +653,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 operationalPainWeights = OpportunityRadarV2.OperationalDefaults,
                 digitalPresenceWeights = OpportunityRadarV2.DigitalDefaults
             }),
+            BusinessProfileJson = JsonSerializer.Serialize(OpportunityRadarEngine.DefaultBusinessProfile, OpportunityRadarEngine.CamelCaseOptions),
             DigestActiveProjectCount = 3, DigestBusinessProspectCount = 2,
             UpdatedAt = DateTime.UtcNow
         };
@@ -650,11 +666,12 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     {
         var activeProject = OpportunityRadarEngine.ReadActiveProjectPreferences(value);
         var businessProspect = OpportunityRadarEngine.ReadBusinessProspectPreferences(value);
+        var businessProfile = OpportunityRadarEngine.ReadBusinessProfile(value);
         return new
         {
             activeProject = new
             {
-                activeProject.Capabilities, activeProject.PreferredProjectTypes, activeProject.ExcludedProjectTypes,
+                activeProject.PreferredProjectTypes, activeProject.ExcludedProjectTypes,
                 activeProject.MinimumBudget,
                 incompleteInformationTolerance = activeProject.IncompleteInformationTolerance.ToString(),
                 weightsV2 = OpportunityRadarV2.ReadActiveWeights(value)
@@ -666,6 +683,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
                 operationalPainWeights = OpportunityRadarV2.ReadOperationalWeights(value),
                 digitalPresenceWeights = OpportunityRadarV2.ReadDigitalWeights(value)
             },
+            businessProfile,
             digestActiveProjectCount = value.DigestActiveProjectCount, digestBusinessProspectCount = value.DigestBusinessProspectCount,
             value.UpdatedAt
         };
@@ -678,9 +696,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         // Program.cs) - but EvaluationProvider.Simulated still exists so historical rows deserialize
         // correctly. Left in place rather than removed so a future Simulated-provider evaluator (if one
         // is ever reintroduced) doesn't silently fall through with no QuestionSetVersion.
-        QuestionSetVersion = outcome.Provider == EvaluationProvider.Jev
-            ? (entityType == OpportunityEntityType.ActiveProject ? JevActiveProjectEvaluator.QuestionSetVersion : JevBusinessProspectEvaluator.QuestionSetVersion)
-            : "radar-v1",
+        QuestionSetVersion = outcome.Provider == EvaluationProvider.Jev ? outcome.QuestionSetVersion : "radar-v1",
         Recommendation = outcome.Result.Recommendation, PriorityBand = outcome.Result.PriorityBand,
         OpportunityScore = outcome.Result.OpportunityScore, JevConfidence = outcome.Result.JevConfidence,
         EvaluatedProspectType = outcome.Result.ProspectType, NeedsVerification = outcome.Result.NeedsVerification,
@@ -794,6 +810,24 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         return weights.Count == required.Length && required.All(weights.ContainsKey)
             && weights.Values.All(x => x is >= 0 and <= 100);
     }
+
+    private static bool ValidBusinessProfile(BusinessProfileRequest profile) =>
+        profile.Positioning is not null && profile.Positioning.Trim().Length is > 0 and <= 1000
+        && profile.BusinessModel is not null && profile.BusinessModel.Trim().Length is > 0 and <= 1000
+        && profile.IdealCustomerTraits is not null && profile.CoreOffers is not null && profile.SecondaryOffers is not null
+        && profile.Capabilities is not null && profile.EngagementModel is not null && profile.CapacityConstraints is not null
+        && profile.GeographicFocus is not null && profile.PriceBands is not null
+        && ValidProfileList(profile.IdealCustomerTraits) && ValidProfileList(profile.CoreOffers)
+        && ValidProfileList(profile.SecondaryOffers, allowEmpty: true) && ValidProfileList(profile.Capabilities)
+        && ValidProfileList(profile.EngagementModel) && ValidProfileList(profile.CapacityConstraints)
+        && ValidProfileList(profile.GeographicFocus) && ValidProfileList(profile.PriceBands);
+
+    private static bool ValidProfileList(string[] values, bool allowEmpty = false) =>
+        values.Length <= 30 && (allowEmpty || values.Length > 0)
+        && values.All(x => !string.IsNullOrWhiteSpace(x) && x.Trim().Length <= 500);
+
+    private static string[] Clean(IEnumerable<string> values) => values.Select(x => x.Trim())
+        .Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
     private static SummaryRow ToSummary(Opportunity opportunity)
     {

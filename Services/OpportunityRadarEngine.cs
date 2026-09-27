@@ -33,7 +33,6 @@ public record RadarResult(
     string RubricVersion = "radar-v1");
 
 public record ActiveProjectPreferences(
-    string[] Capabilities,
     string[] PreferredProjectTypes,
     string[] ExcludedProjectTypes,
     decimal MinimumBudget,
@@ -45,8 +44,71 @@ public record BusinessProspectPreferences(
     string[] PreferredGeographies,
     string[] ExcludedGeographies);
 
+public record HslBusinessProfile(
+    string Positioning,
+    string BusinessModel,
+    string[] IdealCustomerTraits,
+    string[] CoreOffers,
+    string[] SecondaryOffers,
+    string[] Capabilities,
+    string[] EngagementModel,
+    string[] CapacityConstraints,
+    string[] GeographicFocus,
+    string[] PriceBands,
+    DateTime? LastReviewedAt);
+
+public record HslBusinessProfileContext(
+    string Positioning,
+    string BusinessModel,
+    string[] IdealCustomerTraits,
+    string[] CoreOffers,
+    string[] SecondaryOffers,
+    string[] EngagementModel,
+    string[] CapacityConstraints,
+    string[] GeographicFocus,
+    string[] PriceBands);
+
 public static class OpportunityRadarEngine
 {
+    public static readonly HslBusinessProfile DefaultBusinessProfile = new(
+        "Henderson Software Labs builds custom software, automations, and integrations that remove costly manual work for growing businesses without an internal software team.",
+        "Find observable operational friction, begin with a focused paid engagement, deliver a measurable improvement, and grow into a long-term software and automation partnership.",
+        [
+            "Established businesses with roughly 10 to 100 employees and meaningful operational complexity.",
+            "Teams relying on spreadsheets, email, PDFs, recurring reports, order processing, or disconnected systems.",
+            "Businesses without an internal software team and with an identifiable owner or operational decision-maker."
+        ],
+        [
+            "Workflow discovery and automation audits followed by a contained implementation.",
+            "Workflow automation, system integrations, custom internal software, reporting, and portals.",
+            "Ongoing software and automation partnership after a successful initial engagement."
+        ],
+        [
+            "Production Readiness Audits for AI-built software.",
+            "Business websites when they improve customer acquisition or connect to business operations."
+        ],
+        [".NET", "C#", "React", "TypeScript", "SQL", "PostgreSQL", "REST APIs", "AWS"],
+        [
+            "Prefer a narrow, valuable first engagement with phased delivery.",
+            "Prefer client-owned software and infrastructure where practical.",
+            "Use the initial project to earn trust and identify adjacent improvements."
+        ],
+        [
+            "Delivery is centered on one experienced independent engineer, so work must support a useful contained first version.",
+            "Avoid full-time employment, staff augmentation, unpaid work, and equity-only arrangements.",
+            "Avoid broad enterprise transformations and core-system replacements unless a narrow integration or companion workflow is credible."
+        ],
+        ["Frederick and the broader Maryland region for local prospecting, with remote delivery available when the engagement is a strong fit."],
+        [
+            "Workflow discovery or automation audit: $750 to $1,500.",
+            "Small workflow automation: $3,000 to $7,500.",
+            "More substantial workflow automation: $7,500 to $15,000 or more.",
+            "Custom internal software and integrations: approximately $8,000 to $30,000 or more, phased when appropriate.",
+            "Production Readiness Audit: $750 to $3,500 or more depending on application size.",
+            "Ongoing software partnership: approximately $250 to $3,000 or more per month depending on responsibility and improvement capacity."
+        ],
+        null);
+
     // Shared by the List and Digest/Export summary projections so the 180-char preview rule can't drift
     // between them. Only safe to call after materialization (LINQ-to-Objects) - EF Core cannot translate
     // an arbitrary method call inside a query's Select() to SQL.
@@ -146,16 +208,21 @@ public static class OpportunityRadarEngine
         {
             var parsed = JsonSerializer.Deserialize<ActiveProjectPreferencesJson>(preferences.ActiveProjectPreferencesJson, CaseInsensitiveOptions);
             return new ActiveProjectPreferences(
-                parsed?.Capabilities ?? [], parsed?.PreferredProjectTypes ?? [], parsed?.ExcludedProjectTypes ?? [],
+                parsed?.PreferredProjectTypes ?? [], parsed?.ExcludedProjectTypes ?? [],
                 parsed?.MinimumBudget ?? 2500m,
                 Enum.TryParse<IncompleteInformationTolerance>(parsed?.IncompleteInformationTolerance, true, out var tolerance)
                     ? tolerance : IncompleteInformationTolerance.Medium);
         }
         catch (JsonException)
         {
-            return new ActiveProjectPreferences([], [], [], 2500m, IncompleteInformationTolerance.Medium);
+            return new ActiveProjectPreferences([], [], 2500m, IncompleteInformationTolerance.Medium);
         }
     }
+
+    // Read via the business profile itself - see ReadBusinessProfile. Kept as its own named helper
+    // (and sent to Jev as its own hsl_capabilities field, not nested inside hsl_business_profile)
+    // since both evaluators' hsl_delivery_fit wording refers to it explicitly.
+    public static string[] ReadCapabilities(RadarPreferences preferences) => ReadBusinessProfile(preferences).Capabilities;
 
     public static BusinessProspectPreferences ReadBusinessProspectPreferences(RadarPreferences preferences)
     {
@@ -172,6 +239,46 @@ public static class OpportunityRadarEngine
         }
     }
 
+    public static HslBusinessProfile ReadBusinessProfile(RadarPreferences preferences)
+    {
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<HslBusinessProfile>(preferences.BusinessProfileJson, CaseInsensitiveOptions);
+            return parsed is not null
+                && !string.IsNullOrWhiteSpace(parsed.Positioning) && !string.IsNullOrWhiteSpace(parsed.BusinessModel)
+                && parsed.IdealCustomerTraits is not null && parsed.CoreOffers is not null && parsed.SecondaryOffers is not null
+                && parsed.Capabilities is not null && parsed.EngagementModel is not null && parsed.CapacityConstraints is not null
+                && parsed.GeographicFocus is not null && parsed.PriceBands is not null
+                ? parsed : DefaultBusinessProfile;
+        }
+        catch (JsonException)
+        {
+            return DefaultBusinessProfile;
+        }
+    }
+
+    // The profile always shapes both Jev prompts - there is no draft/inactive state to gate on.
+    public static HslBusinessProfileContext ReadBusinessProfileContext(RadarPreferences preferences) =>
+        ToContext(ReadBusinessProfile(preferences));
+
+    public static string EffectiveQuestionSetVersion(string baseVersion, RadarPreferences preferences)
+    {
+        var canonical = JsonSerializer.Serialize(ReadBusinessProfileContext(preferences), CamelCaseOptions);
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant()[..8];
+        return $"{baseVersion}-p{digest}";
+    }
+
+    public static string BusinessProfileDigest(RadarPreferences preferences)
+    {
+        var canonical = JsonSerializer.Serialize(ReadBusinessProfileContext(preferences), CamelCaseOptions);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private static HslBusinessProfileContext ToContext(HslBusinessProfile profile) => new(
+        profile.Positioning, profile.BusinessModel, profile.IdealCustomerTraits, profile.CoreOffers,
+        profile.SecondaryOffers, profile.EngagementModel,
+        profile.CapacityConstraints, profile.GeographicFocus, profile.PriceBands);
+
     private static HashSet<string> Tokens(string value) => Normalize(value)
         .Split(' ', StringSplitOptions.RemoveEmptyEntries)
         .Select(token => token.Length > 3 && token.EndsWith('s') ? token[..^1] : token)
@@ -180,7 +287,6 @@ public static class OpportunityRadarEngine
     private static string Normalize(string value) => Regex.Replace(value.ToLowerInvariant(), @"[^a-z0-9+#.]+", " ").Trim();
 
     private sealed record ActiveProjectPreferencesJson(
-        string[]? Capabilities,
         string[]? PreferredProjectTypes,
         string[]? ExcludedProjectTypes,
         decimal? MinimumBudget,

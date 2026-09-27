@@ -130,6 +130,12 @@ Live batches require a fresh server-generated preview confirmation. Defaults are
 
 `GET /api/admin/opportunity-radar/export` excludes synthetic records unless `includeSynthetic=true`. It quotes every field, doubles embedded quotes, replaces control characters, and neutralizes leading ASCII and full-width formula characters without mutating stored data. Keep all imported and user-written fields on this sanitizer path. Focused tests cover formula prefixes, tabs, line breaks, quote breakout, Unicode variants, keyword misses, keyword false positives, and admin authorization.
 
+## Opportunity Radar: reviewed HSL business profile (2026-09-27)
+
+`RadarPreferences.BusinessProfileJson` stores a per-admin, editable HSL business profile. The seeded profile is an inactive draft synthesized from Jonathan's business-planning conversations, and the deployed API never reads ChatGPT history or memory. When active, the profile enters both Jev request types for HSL-relative judgments only. It must never be treated as evidence of buyer pain, urgency, budget, access, or ROI.
+
+An active profile's canonical content hash is appended to the effective Jev question-set version. Activating, disabling, or materially editing active content marks every latest Ready Jev result Stale. Editing an inactive draft or changing only `LastReviewedAt` does not. `AddRadarBusinessProfile` is additive and must not be applied outside a disposable local database or production without Jonathan's explicit approval.
+
 ## Opportunity Radar: split into ActiveProject / BusinessProspect (2026-09-21)
 
 Checkpoints 1-3 above shipped a single opportunity model. Before any migration was ever applied, that model was split into two entity types sharing one `Opportunity` table plus type-specific detail tables (`ActiveProjectDetail`, `BusinessProspectDetail`, both keyed 1:1 on `OpportunityId`) - table-splitting, not EF inheritance, matching this codebase's flat-POCO convention everywhere else. `Opportunity.EntityType` (`ActiveProject`/`BusinessProspect`) is the discriminant; `OpportunitySourceType`/`OpportunityKind` were retired (`WebsiteOpportunity` *is* `EntityType.BusinessProspect` now).

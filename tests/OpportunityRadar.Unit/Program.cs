@@ -16,11 +16,11 @@ RadarPreferences MakePreferences(
     object? active = null,
     object? operational = null,
     object? digital = null,
-    string[]? excludedIndustries = null) => new()
+    string[]? excludedIndustries = null,
+    HslBusinessProfile? businessProfile = null) => new()
 {
     ActiveProjectPreferencesJson = JsonSerializer.Serialize(new
     {
-        capabilities = new[] { ".NET", "React", "SQL", "REST APIs" },
         preferredProjectTypes = Array.Empty<string>(), excludedProjectTypes = Array.Empty<string>(),
         minimumBudget = 2500,
         incompleteInformationTolerance = "Medium", weightsV2 = active ?? OpportunityRadarV2.ActiveDefaults
@@ -32,6 +32,12 @@ RadarPreferences MakePreferences(
         operationalPainWeights = operational ?? OpportunityRadarV2.OperationalDefaults,
         digitalPresenceWeights = digital ?? OpportunityRadarV2.DigitalDefaults
     }),
+    // A test-fixture capability list deliberately distinct from OpportunityRadarEngine.DefaultBusinessProfile's,
+    // so a bug that silently falls back to defaults isn't masked - only applied when no explicit
+    // businessProfile is supplied, an explicit one is used exactly as given.
+    BusinessProfileJson = JsonSerializer.Serialize(
+        businessProfile ?? (OpportunityRadarEngine.DefaultBusinessProfile with { Capabilities = [".NET", "React", "SQL", "REST APIs"] }),
+        OpportunityRadarEngine.CamelCaseOptions),
     DigestActiveProjectCount = 3,
     DigestBusinessProspectCount = 2
 };
@@ -60,6 +66,20 @@ Opportunity MakeBusinessProspect(string title, string evidenceText, string? indu
 };
 
 var preferences = MakePreferences();
+
+// The business profile always shapes both Jev prompts now, there is no draft/active distinction -
+// its content is what changes, not whether it's "on".
+var defaultProfile = OpportunityRadarEngine.ReadBusinessProfile(preferences);
+Check(defaultProfile.CoreOffers.Length > 0 && defaultProfile.PriceBands.Length > 0 && defaultProfile.Capabilities.Length > 0,
+    "The seeded HSL business profile must be complete, including capabilities.");
+Check(OpportunityRadarEngine.ReadBusinessProfile(new RadarPreferences { BusinessProfileJson = "{}" }).CoreOffers.Length > 0,
+    "Existing preference rows with an empty profile JSON object must receive the complete default profile.");
+var version = OpportunityRadarEngine.EffectiveQuestionSetVersion(JevActiveProjectEvaluator.QuestionSetVersion, preferences);
+Check(version.StartsWith(JevActiveProjectEvaluator.QuestionSetVersion + "-p", StringComparison.Ordinal) && version.Length <= 50,
+    "The effective question-set version must always add a bounded content digest, the profile always shapes the prompt.");
+var editedProfilePreferences = MakePreferences(businessProfile: defaultProfile with { Positioning = "Edited positioning." });
+Check(OpportunityRadarEngine.BusinessProfileDigest(preferences) != OpportunityRadarEngine.BusinessProfileDigest(editedProfilePreferences),
+    "Editing the profile must change Jev prompt provenance, there is no inactive state to shield it.");
 
 // Structured evidence: passages come directly from the import contract, one per fixed field
 // (Active Project) or one per fact (Business Prospect), with no mechanical text-chopping.
@@ -281,6 +301,19 @@ Check(handler.LastRequestUri == new Uri("https://api.typesafe.ai/v1/systemone") 
     "Jev should use the fixed TypeSafe endpoint with bearer authentication.");
 Check(jevOutcome.Model == "jev-1.13.0" && jevOutcome.InputTokens == 321,
     "Jev should preserve resolved model and usage.");
+Check(jevOutcome.QuestionSetVersion.StartsWith(JevActiveProjectEvaluator.QuestionSetVersion + "-p", StringComparison.Ordinal),
+    "The stored question-set version must always carry the profile's content digest, the profile always shapes the prompt.");
+var activeRequest = jev.BuildRequestJson(jevOpportunity, preferences);
+Check(activeRequest.Contains("hsl_business_profile", StringComparison.Ordinal)
+      && activeRequest.Contains("It is business context, not evidence that the buyer has a need.", StringComparison.Ordinal),
+    "Active Project requests must always include reviewed business context, there is no inactive state to gate it.");
+Check(activeRequest.Contains("hsl_capabilities", StringComparison.Ordinal)
+      && activeRequest.Contains("the listed hsl_capabilities", StringComparison.Ordinal),
+    "Active Project requests must always ground hsl_delivery_fit in shared hsl_capabilities.");
+
+var differentCapabilitiesPreferences = MakePreferences(businessProfile: defaultProfile with { Capabilities = ["SomethingEntirelyDifferent"] });
+Check(jev.BuildRequestJson(jevOpportunity, preferences) != jev.BuildRequestJson(jevOpportunity, differentCapabilitiesPreferences),
+    "Shared capability changes must change the Active Project Jev request.");
 
 var invalidHandler = new SequenceHandler(new HttpResponseMessage(HttpStatusCode.OK)
 {
@@ -339,6 +372,8 @@ var prospectJev = new JevBusinessProspectEvaluator(
 var prospectOutcome = await prospectJev.EvaluateAsync(prospectOpportunity, preferences, CancellationToken.None);
 Check(prospectOutcome.Model == "jev-1.13.0" && prospectOutcome.InputTokens == 210,
     "Business Prospect Jev evaluation should preserve model and usage.");
+Check(prospectOutcome.QuestionSetVersion.StartsWith(JevBusinessProspectEvaluator.QuestionSetVersion + "-p", StringComparison.Ordinal),
+    "The stored question-set version must always carry the profile's content digest, the profile always shapes the prompt.");
 Check(prospectHandler.LastRequestBody is not null
       && !prospectHandler.LastRequestBody.Contains("private-agent-name", StringComparison.Ordinal)
       && !prospectHandler.LastRequestBody.Contains("Sourcing agent reason", StringComparison.Ordinal)
@@ -353,7 +388,19 @@ Check(prospectAssessment is not null && Math.Abs(prospectAssessment.Factors["hsl
 var differentPreferences = MakePreferences(excludedIndustries: ["SomethingElseEntirely"]);
 Check(prospectJev.EstimateMaximumInputTokens(prospectOpportunity, preferences)
       == prospectJev.EstimateMaximumInputTokens(prospectOpportunity, differentPreferences),
-    "Business Prospect Jev requests must not depend on local preferences.");
+    "Business Prospect Jev requests must not depend on local screening preferences.");
+var prospectRequest = prospectJev.BuildRequestJson(prospectOpportunity, preferences);
+Check(prospectRequest.Contains("hsl_business_profile", StringComparison.Ordinal)
+      && prospectRequest.Contains("Keep confidence low when prospect evidence is missing.", StringComparison.Ordinal),
+    "Business Prospect requests must always include reviewed HSL context without treating it as prospect evidence.");
+Check(prospectRequest.Contains("using only the supplied evidence", StringComparison.Ordinal)
+      && prospectRequest.Contains("How strong is the direct evidence of urgency", StringComparison.Ordinal),
+    "Classification and urgency questions must remain explicitly grounded in supplied prospect evidence.");
+Check(prospectRequest.Contains("hsl_capabilities", StringComparison.Ordinal)
+      && prospectRequest.Contains("the listed hsl_capabilities", StringComparison.Ordinal),
+    "Business Prospect requests must always ground hsl_delivery_fit in shared hsl_capabilities.");
+Check(prospectJev.BuildRequestJson(prospectOpportunity, preferences) != prospectJev.BuildRequestJson(prospectOpportunity, differentCapabilitiesPreferences),
+    "Shared capability changes must change the Business Prospect Jev request, unlike screening preferences.");
 
 // BuildRequestJson must surface each passage's category tag inline as a hint for Jev, since that is
 // what lets a categorized fact actually influence which passage Jev cites for a given factor.

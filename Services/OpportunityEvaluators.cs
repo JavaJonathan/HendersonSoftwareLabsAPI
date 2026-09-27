@@ -9,6 +9,7 @@ namespace HendersonSoftwareLabsAPI.Services;
 public record OpportunityEvaluationOutcome(
     EvaluationProvider Provider,
     string Model,
+    string QuestionSetVersion,
     string AssessmentJson,
     RadarResult Result,
     string ProviderResponseJson,
@@ -206,7 +207,7 @@ public abstract class JevEvaluatorBase(HttpClient httpClient, IConfiguration con
 public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevActiveProjectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-active-project-jev-v4";
+    public const string QuestionSetVersion = "radar-active-project-jev-v7";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.ActiveProject;
 
@@ -223,7 +224,8 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
             var result = OpportunityRadarV2.ComposeActiveProject(opportunity, preferences, parsed.Assessment);
             logger.LogInformation("Jev evaluation completed for opportunity {OpportunityId} with model {Model}, input tokens {InputTokens}, output tokens {OutputTokens}",
                 opportunity.Id, parsed.Model, parsed.InputTokens, parsed.OutputTokens);
-            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarV2.Serialize(parsed.Assessment), result,
+            return new OpportunityEvaluationOutcome(Provider, parsed.Model, OpportunityRadarEngine.EffectiveQuestionSetVersion(QuestionSetVersion, preferences),
+                OpportunityRadarV2.Serialize(parsed.Assessment), result,
                 responseJson, parsed.InputTokens, parsed.OutputTokens);
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException or KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
@@ -237,16 +239,17 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
         var passages = OpportunityRadarEngine.DeserializePassages(opportunity.SourcePassagesJson);
         var evidenceCriteria = new Dictionary<string, object?> { ["none"] = "No passage directly supports the judgment." };
         foreach (var passage in passages) evidenceCriteria[passage.Id] = passage.Text;
-        var prefs = OpportunityRadarEngine.ReadActiveProjectPreferences(preferences);
         var declaredSourceType = opportunity.ActiveProjectDetail?.DeclaredSourceType ?? ActiveProjectSourceType.ExplicitDemand;
-        var state = new
+        var state = new Dictionary<string, object?>
         {
-            title = opportunity.Title,
-            declared_source_type = declaredSourceType.ToString(),
-            passages = passages.ToDictionary(x => x.Id, x => x.Text),
-            hsl_capabilities = prefs.Capabilities
+            ["title"] = opportunity.Title,
+            ["declared_source_type"] = declaredSourceType.ToString(),
+            ["passages"] = passages.ToDictionary(x => x.Id, x => x.Text),
+            ["hsl_capabilities"] = OpportunityRadarEngine.ReadCapabilities(preferences),
+            ["hsl_business_profile"] = OpportunityRadarEngine.ReadBusinessProfileContext(preferences)
         };
         var fourPoint = new[] { "No evidence", "Weak or ambiguous", "Useful initial evidence", "Clear and concrete" };
+        const string profileRule = " Use hsl_business_profile to understand HSL's actual offers, delivery model, constraints, and price bands. It is business context, not evidence that the buyer has a need.";
         var questions = new Dictionary<string, object>
         {
             ["opportunity_kind"] = Choice("Classify the opportunity by the evidence. Do not infer buying intent from manual work.", new Dictionary<string, object?>
@@ -265,13 +268,13 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
             }),
             ["problem_clarity"] = Score("How clearly does the source establish a concrete software-related problem and desired outcome?", fourPoint),
             ["problem_clarity_passage"] = Choice("Choose the passage that best supports the problem_clarity score. Choose none when unsupported.", evidenceCriteria),
-            ["hsl_delivery_fit"] = Score("How well does the work fit the listed hsl_capabilities? Judge the work, not keyword overlap.", fourPoint),
+            ["hsl_delivery_fit"] = Score("How well does the work fit the listed hsl_capabilities? Judge the work, not keyword overlap." + profileRule, fourPoint),
             ["hsl_delivery_fit_passage"] = Choice("Choose the passage that best supports the hsl_delivery_fit score. Choose none when unsupported.", evidenceCriteria),
-            ["independent_scope_value"] = Score("How likely is a version scoped for one independent engineer to still be genuinely useful to the buyer?", fourPoint),
+            ["independent_scope_value"] = Score("How likely is a version scoped for one independent engineer to still be genuinely useful to the buyer?" + profileRule, fourPoint),
             ["independent_scope_value_passage"] = Choice("Choose the passage that best supports the independent_scope_value score. Choose none when unsupported.", evidenceCriteria),
-            ["independent_scope_feasibility"] = Score("How feasible is it for one experienced independent engineer to build a first version in a reasonable timeframe?", fourPoint),
+            ["independent_scope_feasibility"] = Score("How feasible is it for one experienced independent engineer to build a first version in a reasonable timeframe?" + profileRule, fourPoint),
             ["independent_scope_feasibility_passage"] = Choice("Choose the passage that best supports the independent_scope_feasibility score. Choose none when unsupported.", evidenceCriteria),
-            ["economic_viability"] = Score("How plausible is meaningful economic value relative to a contained software engagement? Do not invent ROI.", fourPoint),
+            ["economic_viability"] = Score("How plausible is meaningful economic value relative to a contained software engagement? Do not invent ROI, and keep confidence low when buyer evidence is missing." + profileRule, fourPoint),
             ["economic_viability_passage"] = Choice("Choose the passage that best supports the economic_viability score. Choose none when unsupported.", evidenceCriteria),
             ["urgency"] = Score("How strong is the direct evidence of timing or urgency?", fourPoint),
             ["urgency_passage"] = Choice("Choose the passage that best supports the urgency score. Choose none when unsupported.", evidenceCriteria),
