@@ -7,7 +7,7 @@ namespace HendersonSoftwareLabsAPI.Services;
 public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevBusinessProspectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-business-prospect-jev-v2";
+    public const string QuestionSetVersion = "radar-business-prospect-jev-v4";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.BusinessProspect;
 
@@ -61,21 +61,33 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
                     ["hybrid"] = "Direct operational pain exists and digital weakness offers an additional entry path.",
                     ["unknown"] = "The evidence does not support one of the other classifications."
                 }),
-            ["pain_evidence"] = Score("How strong and direct is the evidence of costly or repetitive operational pain?", fourPoint),
+            ["pain_cost_severity"] = Score("How strong and direct is the evidence that this workflow problem is costly: wasted money, staff time, or missed revenue?", fourPoint),
+            ["pain_cost_severity_passage"] = Choice("Choose the passage that best supports the pain_cost_severity score. Choose none when unsupported.", evidenceCriteria),
+            ["pain_frequency"] = Score("How strong and direct is the evidence that this workflow problem is frequent or repetitive, rather than a one-off?", fourPoint),
+            ["pain_frequency_passage"] = Choice("Choose the passage that best supports the pain_frequency score. Choose none when unsupported.", evidenceCriteria),
             ["automation_feasibility"] = Score("How feasible is a narrow software, automation, or integration response without replacing a core system?", fourPoint),
+            ["automation_feasibility_passage"] = Choice("Choose the passage that best supports the automation_feasibility score. Choose none when unsupported.", evidenceCriteria),
             ["economic_leverage"] = Score("How plausible is meaningful economic leverage? Do not treat a full salary as recoverable savings or invent ROI.", fourPoint),
+            ["economic_leverage_passage"] = Choice("Choose the passage that best supports the economic_leverage score. Choose none when unsupported.", evidenceCriteria),
             ["contained_engagement"] = Score("How plausible is a contained first engagement HSL could deliver?", fourPoint),
+            ["contained_engagement_passage"] = Choice("Choose the passage that best supports the contained_engagement score. Choose none when unsupported.", evidenceCriteria),
             ["urgency"] = Score("How strong is the direct evidence of urgency or favorable timing?", fourPoint),
+            ["urgency_passage"] = Choice("Choose the passage that best supports the urgency score. Choose none when unsupported.", evidenceCriteria),
             ["hsl_delivery_fit"] = Score("How well does the opportunity fit a small custom-software consultancy focused on integrations, automation, portals, reporting, and web applications?", fourPoint),
+            ["hsl_delivery_fit_passage"] = Choice("Choose the passage that best supports the hsl_delivery_fit score. Choose none when unsupported.", evidenceCriteria),
             ["buyer_access"] = Score("How reachable and identifiable is a likely buyer or decision-maker?", fourPoint),
+            ["buyer_access_passage"] = Choice("Choose the passage that best supports the buyer_access score. Choose none when unsupported.", evidenceCriteria),
             ["business_strength"] = Score("How established does the business appear from real-world signals? Judge the business, not its website.", fourPoint),
+            ["business_strength_passage"] = Choice("Choose the passage that best supports the business_strength score. Choose none when unsupported.", evidenceCriteria),
             ["digital_weakness"] = Score("How weak is the observable digital presence relative to the business?", fourPoint),
+            ["digital_weakness_passage"] = Choice("Choose the passage that best supports the digital_weakness score. Choose none when unsupported.", evidenceCriteria),
             ["reputation_mismatch"] = Score("How large is the gap between real-world reputation and the digital presence?", fourPoint),
+            ["reputation_mismatch_passage"] = Choice("Choose the passage that best supports the reputation_mismatch score. Choose none when unsupported.", evidenceCriteria),
             ["entry_project_strength"] = Score("How plausible and well-scoped is a first digital-presence engagement?", fourPoint),
+            ["entry_project_strength_passage"] = Choice("Choose the passage that best supports the entry_project_strength score. Choose none when unsupported.", evidenceCriteria),
             ["speculative_workflow"] = Noul("Are the claimed workflow problems supported mainly by industry assumptions rather than direct observed evidence?"),
             ["physical_or_judgment_heavy"] = Noul("Is the work primarily physical, relationship-based, judgment-heavy, or dominated by unpredictable exceptions?"),
             ["core_system_replacement"] = Noul("Would the likely solution require replacing a specialized core ERP, dispatch, medical, financial, or similar system?"),
-            ["primary_evidence"] = Choice("Choose the passage that best supports the primary opportunity judgment. Choose none when unsupported.", evidenceCriteria),
             ["concern_evidence"] = Choice("Choose the passage that best supports any concern. Choose none when there is no concern.", evidenceCriteria)
         };
         return JsonSerializer.Serialize(new { state, model = Model, questions });
@@ -97,20 +109,19 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
         };
         var passageIds = (OpportunityRadarEngine.DeserializePassages(opportunity.SourcePassagesJson)).Select(x => x.Id).ToHashSet();
         passageIds.Add("none");
-        var evidence = ValidateEvidenceChoice(answers, "primary_evidence", passageIds);
         var factors = new Dictionary<string, JevJudgment>
         {
-            ["painEvidence"] = Judgment(answers, "pain_evidence", evidence),
-            ["automationFeasibility"] = Judgment(answers, "automation_feasibility", evidence),
-            ["economicLeverage"] = Judgment(answers, "economic_leverage", evidence),
-            ["containedEngagement"] = Judgment(answers, "contained_engagement", evidence),
-            ["urgency"] = Judgment(answers, "urgency", evidence),
-            ["hslDeliveryFit"] = Judgment(answers, "hsl_delivery_fit", evidence),
-            ["buyerAccess"] = Judgment(answers, "buyer_access", evidence),
-            ["businessStrength"] = Judgment(answers, "business_strength", evidence),
-            ["digitalWeakness"] = Judgment(answers, "digital_weakness", evidence),
-            ["reputationMismatch"] = Judgment(answers, "reputation_mismatch", evidence),
-            ["entryProjectStrength"] = Judgment(answers, "entry_project_strength", evidence)
+            ["painEvidence"] = CombineJudgments(Judgment(answers, "pain_cost_severity", passageIds), Judgment(answers, "pain_frequency", passageIds)),
+            ["automationFeasibility"] = Judgment(answers, "automation_feasibility", passageIds),
+            ["economicLeverage"] = Judgment(answers, "economic_leverage", passageIds),
+            ["containedEngagement"] = Judgment(answers, "contained_engagement", passageIds),
+            ["urgency"] = Judgment(answers, "urgency", passageIds),
+            ["hslDeliveryFit"] = Judgment(answers, "hsl_delivery_fit", passageIds),
+            ["buyerAccess"] = Judgment(answers, "buyer_access", passageIds),
+            ["businessStrength"] = Judgment(answers, "business_strength", passageIds),
+            ["digitalWeakness"] = Judgment(answers, "digital_weakness", passageIds),
+            ["reputationMismatch"] = Judgment(answers, "reputation_mismatch", passageIds),
+            ["entryProjectStrength"] = Judgment(answers, "entry_project_strength", passageIds)
         };
         var assessment = new BusinessProspectV2Assessment(prospectType, ConfidenceValue(answers, "prospect_type"), factors,
             NoulValue(answers, "speculative_workflow") >= 0.67, NoulValue(answers, "physical_or_judgment_heavy") >= 0.67,
@@ -118,6 +129,6 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
         return (resolvedModel, assessment, usage.GetProperty("input_tokens").GetInt32(), usage.GetProperty("output_tokens").GetInt32());
     }
 
-    private static JevJudgment Judgment(JsonElement answers, string key, string evidence) =>
-        new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), evidence);
+    private static JevJudgment Judgment(JsonElement answers, string key, HashSet<string> passageIds) =>
+        new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), ValidateEvidenceChoice(answers, $"{key}_passage", passageIds));
 }

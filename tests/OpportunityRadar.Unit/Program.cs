@@ -209,12 +209,19 @@ var jevResponse = JsonSerializer.Serialize(new
     answers = new Dictionary<string, object>
     {
         ["opportunity_kind"] = ChoiceAnswer("explicit_demand"), ["project_type"] = ChoiceAnswer("integration"),
-        ["problem_clarity"] = ScoreAnswer(2.8), ["hsl_delivery_fit"] = ScoreAnswer(2.8),
-        ["independent_scope"] = ScoreAnswer(2.7), ["economic_viability"] = ScoreAnswer(2.5),
-        ["urgency"] = ScoreAnswer(2.4), ["buyer_readiness"] = ScoreAnswer(2.3),
-        ["information_market_fit"] = ScoreAnswer(2.5), ["employment_or_staffing"] = NoulAnswer(0.05),
+        ["problem_clarity"] = ScoreAnswer(2.8), ["problem_clarity_passage"] = ChoiceAnswer("request"),
+        ["hsl_delivery_fit"] = ScoreAnswer(2.8), ["hsl_delivery_fit_passage"] = ChoiceAnswer("request"),
+        ["independent_scope_value"] = ScoreAnswer(2.7), ["independent_scope_value_passage"] = ChoiceAnswer("request"),
+        ["independent_scope_feasibility"] = ScoreAnswer(2.7), ["independent_scope_feasibility_passage"] = ChoiceAnswer("request"),
+        ["economic_viability"] = ScoreAnswer(2.5), ["economic_viability_passage"] = ChoiceAnswer("request"),
+        ["urgency"] = ScoreAnswer(2.4), ["urgency_passage"] = ChoiceAnswer("request"),
+        ["buyer_readiness_access"] = ScoreAnswer(2.3), ["buyer_readiness_access_passage"] = ChoiceAnswer("request"),
+        ["buyer_readiness_next_step"] = ScoreAnswer(2.3), ["buyer_readiness_next_step_passage"] = ChoiceAnswer("request"),
+        ["information_market_fit_market"] = ScoreAnswer(2.5), ["information_market_fit_market_passage"] = ChoiceAnswer("request"),
+        ["information_market_fit_delivery"] = ScoreAnswer(2.5), ["information_market_fit_delivery_passage"] = ChoiceAnswer("request"),
+        ["employment_or_staffing"] = NoulAnswer(0.05),
         ["team_scale"] = NoulAnswer(0.05), ["core_system_replacement"] = NoulAnswer(0.05),
-        ["primary_evidence"] = ChoiceAnswer("request"), ["concern_evidence"] = ChoiceAnswer("none")
+        ["concern_evidence"] = ChoiceAnswer("none")
     },
     usage = new { input_tokens = 321, output_tokens = 44 }
 });
@@ -263,14 +270,21 @@ var prospectResponse = JsonSerializer.Serialize(new
     model = "jev-1.13.0",
     answers = new Dictionary<string, object>
     {
-        ["prospect_type"] = ChoiceAnswer("digital_presence"), ["pain_evidence"] = ScoreAnswer(0.8),
-        ["automation_feasibility"] = ScoreAnswer(1.1), ["economic_leverage"] = ScoreAnswer(1.3),
-        ["contained_engagement"] = ScoreAnswer(2.4), ["urgency"] = ScoreAnswer(2.1),
-        ["hsl_delivery_fit"] = ScoreAnswer(2.6), ["buyer_access"] = ScoreAnswer(2.1),
-        ["business_strength"] = ScoreAnswer(2.6), ["digital_weakness"] = ScoreAnswer(2.8),
-        ["reputation_mismatch"] = ScoreAnswer(2.4), ["entry_project_strength"] = ScoreAnswer(2.5),
+        ["prospect_type"] = ChoiceAnswer("digital_presence"),
+        ["pain_cost_severity"] = ScoreAnswer(0.8), ["pain_cost_severity_passage"] = ChoiceAnswer("fact-1"),
+        ["pain_frequency"] = ScoreAnswer(0.8), ["pain_frequency_passage"] = ChoiceAnswer("fact-1"),
+        ["automation_feasibility"] = ScoreAnswer(1.1), ["automation_feasibility_passage"] = ChoiceAnswer("fact-1"),
+        ["economic_leverage"] = ScoreAnswer(1.3), ["economic_leverage_passage"] = ChoiceAnswer("fact-1"),
+        ["contained_engagement"] = ScoreAnswer(2.4), ["contained_engagement_passage"] = ChoiceAnswer("fact-1"),
+        ["urgency"] = ScoreAnswer(2.1), ["urgency_passage"] = ChoiceAnswer("fact-1"),
+        ["hsl_delivery_fit"] = ScoreAnswer(2.6), ["hsl_delivery_fit_passage"] = ChoiceAnswer("fact-1"),
+        ["buyer_access"] = ScoreAnswer(2.1), ["buyer_access_passage"] = ChoiceAnswer("fact-1"),
+        ["business_strength"] = ScoreAnswer(2.6), ["business_strength_passage"] = ChoiceAnswer("fact-1"),
+        ["digital_weakness"] = ScoreAnswer(2.8), ["digital_weakness_passage"] = ChoiceAnswer("fact-1"),
+        ["reputation_mismatch"] = ScoreAnswer(2.4), ["reputation_mismatch_passage"] = ChoiceAnswer("fact-1"),
+        ["entry_project_strength"] = ScoreAnswer(2.5), ["entry_project_strength_passage"] = ChoiceAnswer("fact-1"),
         ["speculative_workflow"] = NoulAnswer(0.1), ["physical_or_judgment_heavy"] = NoulAnswer(0.1),
-        ["core_system_replacement"] = NoulAnswer(0.1), ["primary_evidence"] = ChoiceAnswer("fact-1"),
+        ["core_system_replacement"] = NoulAnswer(0.1),
         ["concern_evidence"] = ChoiceAnswer("none")
     },
     usage = new { input_tokens = 210, output_tokens = 38 }
@@ -294,6 +308,46 @@ var differentPreferences = MakePreferences(excludedIndustries: ["SomethingElseEn
 Check(prospectJev.EstimateMaximumInputTokens(prospectOpportunity, preferences)
       == prospectJev.EstimateMaximumInputTokens(prospectOpportunity, differentPreferences),
     "Business Prospect Jev requests must not depend on local preferences.");
+
+// pain_evidence was split into pain_cost_severity/pain_frequency and must be combined back into one
+// painEvidence factor: the score averages the two sub-questions, and the cited evidence comes from
+// whichever sub-question scored higher (here, cost severity), not necessarily the first one.
+var combineResponse = JsonSerializer.Serialize(new
+{
+    model = "jev-1.13.0",
+    answers = new Dictionary<string, object>
+    {
+        ["prospect_type"] = ChoiceAnswer("digital_presence"),
+        ["pain_cost_severity"] = ScoreAnswer(3.0), ["pain_cost_severity_passage"] = ChoiceAnswer("fact-1"),
+        ["pain_frequency"] = ScoreAnswer(0.0), ["pain_frequency_passage"] = ChoiceAnswer("none"),
+        ["automation_feasibility"] = ScoreAnswer(1.1), ["automation_feasibility_passage"] = ChoiceAnswer("fact-1"),
+        ["economic_leverage"] = ScoreAnswer(1.3), ["economic_leverage_passage"] = ChoiceAnswer("fact-1"),
+        ["contained_engagement"] = ScoreAnswer(2.4), ["contained_engagement_passage"] = ChoiceAnswer("fact-1"),
+        ["urgency"] = ScoreAnswer(2.1), ["urgency_passage"] = ChoiceAnswer("fact-1"),
+        ["hsl_delivery_fit"] = ScoreAnswer(2.6), ["hsl_delivery_fit_passage"] = ChoiceAnswer("fact-1"),
+        ["buyer_access"] = ScoreAnswer(2.1), ["buyer_access_passage"] = ChoiceAnswer("fact-1"),
+        ["business_strength"] = ScoreAnswer(2.6), ["business_strength_passage"] = ChoiceAnswer("fact-1"),
+        ["digital_weakness"] = ScoreAnswer(2.8), ["digital_weakness_passage"] = ChoiceAnswer("fact-1"),
+        ["reputation_mismatch"] = ScoreAnswer(2.4), ["reputation_mismatch_passage"] = ChoiceAnswer("fact-1"),
+        ["entry_project_strength"] = ScoreAnswer(2.5), ["entry_project_strength_passage"] = ChoiceAnswer("fact-1"),
+        ["speculative_workflow"] = NoulAnswer(0.1), ["physical_or_judgment_heavy"] = NoulAnswer(0.1),
+        ["core_system_replacement"] = NoulAnswer(0.1),
+        ["concern_evidence"] = ChoiceAnswer("none")
+    },
+    usage = new { input_tokens = 210, output_tokens = 38 }
+});
+var combineHandler = new SequenceHandler(new HttpResponseMessage(HttpStatusCode.OK)
+{
+    Content = new StringContent(combineResponse, Encoding.UTF8, "application/json")
+});
+var combineJev = new JevBusinessProspectEvaluator(
+    new HttpClient(combineHandler) { BaseAddress = new Uri("https://api.typesafe.ai") }, configuration,
+    NullLogger<JevBusinessProspectEvaluator>.Instance);
+var combineOutcome = await combineJev.EvaluateAsync(prospectOpportunity, preferences, CancellationToken.None);
+var combineAssessment = OpportunityRadarV2.DeserializeBusiness(combineOutcome.AssessmentJson);
+Check(combineAssessment is not null && Math.Abs(combineAssessment.Factors["painEvidence"].Score - 1.5) < 0.001
+      && combineAssessment.Factors["painEvidence"].EvidencePassageId == "fact-1",
+    "Combined pain_evidence must average the split cost/frequency scores and cite whichever sub-question scored higher.");
 
 // Prospect type is now a purely explicit field (no more regex fallback scanning evidence text).
 Check(OpportunityImportService.ParseProspectType("OperationalPain") == BusinessProspectType.OperationalPain,

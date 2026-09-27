@@ -133,6 +133,14 @@ public abstract class JevEvaluatorBase(HttpClient httpClient, IConfiguration con
         return value;
     }
 
+    // Combines sub-questions that split a single conflated judgment (e.g. pain_evidence's cost vs.
+    // frequency) back into one factor, so weights/checks downstream never see the split. Evidence comes
+    // from whichever sub-question scored higher, since that's the half actually driving the combined
+    // score and what the unsupported:<factor> check cares about.
+    protected static JevJudgment CombineJudgments(params JevJudgment[] parts) =>
+        new(parts.Average(x => x.Score), parts.Average(x => x.Confidence),
+            parts.OrderByDescending(x => x.Score).First().EvidencePassageId);
+
     protected static string ChoiceValue(JsonElement answers, string key)
     {
         var answer = answers.GetProperty(key);
@@ -198,7 +206,7 @@ public abstract class JevEvaluatorBase(HttpClient httpClient, IConfiguration con
 public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevActiveProjectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-active-project-jev-v2";
+    public const string QuestionSetVersion = "radar-active-project-jev-v4";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.ActiveProject;
 
@@ -256,16 +264,28 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
                 ["greenfield_product"] = "Build a new commercial software product.", ["staffing"] = "Employment or staff augmentation.", ["other"] = null
             }),
             ["problem_clarity"] = Score("How clearly does the source establish a concrete software-related problem and desired outcome?", fourPoint),
+            ["problem_clarity_passage"] = Choice("Choose the passage that best supports the problem_clarity score. Choose none when unsupported.", evidenceCriteria),
             ["hsl_delivery_fit"] = Score("How well does the work fit the listed hsl_capabilities? Judge the work, not keyword overlap.", fourPoint),
-            ["independent_scope"] = Score("How feasible is a useful first version for one experienced independent engineer?", fourPoint),
+            ["hsl_delivery_fit_passage"] = Choice("Choose the passage that best supports the hsl_delivery_fit score. Choose none when unsupported.", evidenceCriteria),
+            ["independent_scope_value"] = Score("How likely is a version scoped for one independent engineer to still be genuinely useful to the buyer?", fourPoint),
+            ["independent_scope_value_passage"] = Choice("Choose the passage that best supports the independent_scope_value score. Choose none when unsupported.", evidenceCriteria),
+            ["independent_scope_feasibility"] = Score("How feasible is it for one experienced independent engineer to build a first version in a reasonable timeframe?", fourPoint),
+            ["independent_scope_feasibility_passage"] = Choice("Choose the passage that best supports the independent_scope_feasibility score. Choose none when unsupported.", evidenceCriteria),
             ["economic_viability"] = Score("How plausible is meaningful economic value relative to a contained software engagement? Do not invent ROI.", fourPoint),
+            ["economic_viability_passage"] = Choice("Choose the passage that best supports the economic_viability score. Choose none when unsupported.", evidenceCriteria),
             ["urgency"] = Score("How strong is the direct evidence of timing or urgency?", fourPoint),
-            ["buyer_readiness"] = Score("How actionable is the demand, including access to a buyer and an identifiable next step?", fourPoint),
-            ["information_market_fit"] = Score("How sufficient is the source for an initial decision, including market and delivery context?", fourPoint),
+            ["urgency_passage"] = Choice("Choose the passage that best supports the urgency score. Choose none when unsupported.", evidenceCriteria),
+            ["buyer_readiness_access"] = Score("How reachable and identifiable is a likely buyer or decision-maker?", fourPoint),
+            ["buyer_readiness_access_passage"] = Choice("Choose the passage that best supports the buyer_readiness_access score. Choose none when unsupported.", evidenceCriteria),
+            ["buyer_readiness_next_step"] = Score("How clear and concrete is an identifiable next step to engage the buyer?", fourPoint),
+            ["buyer_readiness_next_step_passage"] = Choice("Choose the passage that best supports the buyer_readiness_next_step score. Choose none when unsupported.", evidenceCriteria),
+            ["information_market_fit_market"] = Score("How sufficient is the source for understanding the market and buyer context needed for an initial decision?", fourPoint),
+            ["information_market_fit_market_passage"] = Choice("Choose the passage that best supports the information_market_fit_market score. Choose none when unsupported.", evidenceCriteria),
+            ["information_market_fit_delivery"] = Score("How sufficient is the source for understanding the delivery context, such as scope or technical requirements, needed for an initial decision?", fourPoint),
+            ["information_market_fit_delivery_passage"] = Choice("Choose the passage that best supports the information_market_fit_delivery score. Choose none when unsupported.", evidenceCriteria),
             ["employment_or_staffing"] = Noul("Is this primarily employment, staff augmentation, or an ongoing role rather than an independent project?"),
             ["team_scale"] = Noul("Does success appear to require a large team, broad transformation, or multi-year delivery?"),
             ["core_system_replacement"] = Noul("Does the request appear to require replacing a specialized core ERP, dispatch, medical, financial, or similar system rather than complementing it?"),
-            ["primary_evidence"] = Choice("Choose the single passage that best supports the problem and fit judgments. Choose none when unsupported.", evidenceCriteria),
             ["concern_evidence"] = Choice("Choose the single passage that best supports any delivery concern. Choose none when there is no concern.", evidenceCriteria)
         };
         return JsonSerializer.Serialize(new { state, model = Model, questions });
@@ -293,16 +313,15 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
         };
         var passageIds = (OpportunityRadarEngine.DeserializePassages(opportunity.SourcePassagesJson)).Select(x => x.Id).ToHashSet();
         passageIds.Add("none");
-        var primaryEvidence = ValidateEvidenceChoice(answers, "primary_evidence", passageIds);
         var factors = new Dictionary<string, JevJudgment>
         {
-            ["problemClarity"] = Judgment(answers, "problem_clarity", primaryEvidence),
-            ["hslDeliveryFit"] = Judgment(answers, "hsl_delivery_fit", primaryEvidence),
-            ["independentScope"] = Judgment(answers, "independent_scope", primaryEvidence),
-            ["economicViability"] = Judgment(answers, "economic_viability", primaryEvidence),
-            ["urgency"] = Judgment(answers, "urgency", primaryEvidence),
-            ["buyerReadiness"] = Judgment(answers, "buyer_readiness", primaryEvidence),
-            ["informationMarketFit"] = Judgment(answers, "information_market_fit", primaryEvidence)
+            ["problemClarity"] = Judgment(answers, "problem_clarity", passageIds),
+            ["hslDeliveryFit"] = Judgment(answers, "hsl_delivery_fit", passageIds),
+            ["independentScope"] = CombineJudgments(Judgment(answers, "independent_scope_value", passageIds), Judgment(answers, "independent_scope_feasibility", passageIds)),
+            ["economicViability"] = Judgment(answers, "economic_viability", passageIds),
+            ["urgency"] = Judgment(answers, "urgency", passageIds),
+            ["buyerReadiness"] = CombineJudgments(Judgment(answers, "buyer_readiness_access", passageIds), Judgment(answers, "buyer_readiness_next_step", passageIds)),
+            ["informationMarketFit"] = CombineJudgments(Judgment(answers, "information_market_fit_market", passageIds), Judgment(answers, "information_market_fit_delivery", passageIds))
         };
         var assessment = new ActiveProjectV2Assessment(kind.ToString(), ConfidenceValue(answers, "opportunity_kind"), projectType, factors,
             NoulValue(answers, "employment_or_staffing") >= 0.67, NoulValue(answers, "team_scale") >= 0.67,
@@ -310,6 +329,6 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
         return (resolvedModel, assessment, usage.GetProperty("input_tokens").GetInt32(), usage.GetProperty("output_tokens").GetInt32());
     }
 
-    private static JevJudgment Judgment(JsonElement answers, string key, string evidence) =>
-        new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), evidence);
+    private static JevJudgment Judgment(JsonElement answers, string key, HashSet<string> passageIds) =>
+        new(Math.Clamp(ScoreValue(answers, key), 0, 3), ConfidenceValue(answers, key), ValidateEvidenceChoice(answers, $"{key}_passage", passageIds));
 }
