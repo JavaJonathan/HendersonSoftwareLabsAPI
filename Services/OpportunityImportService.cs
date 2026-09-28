@@ -79,8 +79,8 @@ public interface IOpportunityImportService
 }
 
 // Exact-match imports upsert the existing row's source material rather than rejecting it, and never
-// touch UserDecision/Notes/DuplicateOfId/IsSynthetic. This is what makes CSV resubmission safe: an
-// agent can re-run the same research and re-export a CSV without duplicating rows or clobbering a
+// touch UserDecision/Notes/DuplicateOfId/IsSynthetic. This is what makes JSON resubmission safe: an
+// agent can re-run the same research and reimport it without duplicating rows or clobbering a
 // decision a human already made.
 public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportunityImportService
 {
