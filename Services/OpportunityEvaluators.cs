@@ -207,7 +207,7 @@ public abstract class JevEvaluatorBase(HttpClient httpClient, IConfiguration con
 public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevActiveProjectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-active-project-jev-v7";
+    public const string QuestionSetVersion = "radar-active-project-jev-v8";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.ActiveProject;
 
@@ -287,8 +287,8 @@ public sealed class JevActiveProjectEvaluator(HttpClient httpClient, IConfigurat
             ["information_market_fit_delivery"] = Score("How sufficient is the source for understanding the delivery context, such as scope or technical requirements, needed for an initial decision?", fourPoint),
             ["information_market_fit_delivery_passage"] = Choice("Choose the passage that best supports the information_market_fit_delivery score. Choose none when unsupported.", evidenceCriteria),
             ["employment_or_staffing"] = Noul("Is this primarily employment, staff augmentation, or an ongoing role rather than an independent project?"),
-            ["team_scale"] = Noul("Does success appear to require a large team, broad transformation, or multi-year delivery?"),
-            ["core_system_replacement"] = Noul("Does the request appear to require replacing a specialized core ERP, dispatch, medical, financial, or similar system rather than complementing it?"),
+            ["team_scale"] = Noul("Does the work appear to need more than one independent engineer, such as a large team, a company-wide transformation, or a multi-year program? Answer no if a single experienced engineer could plausibly deliver a useful first version."),
+            ["core_system_replacement"] = Noul("Would fixing the described problem require replacing a specialized core system (ERP, dispatch, medical records, financial or accounting platform) instead of adding a tool alongside it? Answer no if a small integration, portal, or automation could sit next to the existing system."),
             ["concern_evidence"] = Choice("Choose the single passage that best supports any delivery concern. Choose none when there is no concern.", evidenceCriteria)
         };
         return JsonSerializer.Serialize(new { state, model = Model, questions });

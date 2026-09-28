@@ -7,7 +7,7 @@ namespace HendersonSoftwareLabsAPI.Services;
 public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfiguration configuration, ILogger<JevBusinessProspectEvaluator> logger)
     : JevEvaluatorBase(httpClient, configuration, logger)
 {
-    public const string QuestionSetVersion = "radar-business-prospect-jev-v8";
+    public const string QuestionSetVersion = "radar-business-prospect-jev-v9";
 
     public override OpportunityEntityType SupportedEntityType => OpportunityEntityType.BusinessProspect;
 
@@ -93,9 +93,9 @@ public sealed class JevBusinessProspectEvaluator(HttpClient httpClient, IConfigu
             ["reputation_mismatch_passage"] = Choice("Choose the passage that best supports the reputation_mismatch score. Choose none when unsupported.", evidenceCriteria),
             ["entry_project_strength"] = Score("How plausible and well-scoped is a first digital-presence engagement?" + profileRule, fourPoint),
             ["entry_project_strength_passage"] = Choice("Choose the passage that best supports the entry_project_strength score. Choose none when unsupported.", evidenceCriteria),
-            ["speculative_workflow"] = Noul("Are the claimed workflow problems supported mainly by industry assumptions rather than direct observed evidence?"),
-            ["physical_or_judgment_heavy"] = Noul("Is the work primarily physical, relationship-based, judgment-heavy, or dominated by unpredictable exceptions?"),
-            ["core_system_replacement"] = Noul("Would the likely solution require replacing a specialized core ERP, dispatch, medical, financial, or similar system?"),
+            ["speculative_workflow"] = Noul("Do the described workflow problems come mainly from assumptions about what businesses in this industry usually struggle with, rather than from something directly observed about this business? Answer no if the sources directly show the problem (a described manual process, a staff complaint, a review mentioning it)."),
+            ["physical_or_judgment_heavy"] = Noul("Setting aside any single task, is this business's core work mostly hands-on, relationship-driven, or dependent on case-by-case judgment, so that software or automation would leave most of the workload untouched? Answer no if a substantial share of the work is repetitive, rule-based information handling (scheduling, intake, quoting, follow-up, billing, reporting), even if the business also does physical or relationship-based work."),
+            ["core_system_replacement"] = Noul("Would fixing the likely problem require replacing a specialized core system (ERP, dispatch, medical records, financial or accounting platform) instead of adding a tool alongside it? Answer no if a small integration, portal, or automation could sit next to the existing system."),
             ["concern_evidence"] = Choice("Choose the passage that best supports any concern. Choose none when there is no concern.", evidenceCriteria)
         };
         return JsonSerializer.Serialize(new { state, model = Model, questions });

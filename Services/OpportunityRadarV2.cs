@@ -127,7 +127,7 @@ public static partial class OpportunityRadarV2
         if (assessment.SpeculativeWorkflow)
             checks.Add(new("speculativeWorkflow", EvaluationCheckSeverity.Review, "The workflow claim appears to rely mainly on industry assumptions rather than direct evidence.", assessment.ConcernEvidencePassageId));
         if (assessment.PhysicalOrJudgmentHeavy)
-            checks.Add(new("physicalOrJudgmentHeavy", EvaluationCheckSeverity.Review, "The work appears substantially physical, relationship-based, judgment-heavy, or exception-heavy.", assessment.ConcernEvidencePassageId));
+            checks.Add(new("physicalOrJudgmentHeavy", EvaluationCheckSeverity.Review, "This business may be a poor fit for software or automation because its work is mostly hands-on, relationship-driven, or dependent on case-by-case judgment.", assessment.ConcernEvidencePassageId));
         if (assessment.CoreSystemReplacement)
             checks.Add(new("coreReplacement", EvaluationCheckSeverity.Review, "The proposed solution may require replacing a specialized core system.", assessment.ConcernEvidencePassageId));
         if (detail.Industry is not null && prefs.ExcludedIndustries.Contains(detail.Industry, StringComparer.OrdinalIgnoreCase))
