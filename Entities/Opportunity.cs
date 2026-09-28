@@ -27,6 +27,7 @@ public class Opportunity
     public string? SourceUrl { get; set; }
     public DateTime? SourceDate { get; set; }
     public string? ExternalId { get; set; }
+    public PriorityBand? OpportunityRating { get; set; }
     public ResearchConfidence? ResearchConfidence { get; set; }
     public string? ResearchConfidenceReason { get; set; }
     public string? ResearchAgent { get; set; }

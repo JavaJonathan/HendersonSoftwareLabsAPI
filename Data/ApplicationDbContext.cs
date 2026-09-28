@@ -55,6 +55,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.Property(x => x.SourceName).HasMaxLength(200);
             entity.Property(x => x.SourceUrl).HasMaxLength(1000);
             entity.Property(x => x.ExternalId).HasMaxLength(200);
+            entity.Property(x => x.OpportunityRating).HasConversion<string>().HasMaxLength(20);
             entity.Property(x => x.ResearchConfidence).HasConversion<string>().HasMaxLength(20);
             entity.Property(x => x.ResearchConfidenceReason).HasMaxLength(500);
             entity.Property(x => x.ResearchAgent).HasMaxLength(100);

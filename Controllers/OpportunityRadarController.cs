@@ -78,6 +78,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             .Select(x => new
             {
                 x.Id, x.EntityType, x.Title, x.Description, x.DuplicateOfId, x.IsSynthetic, x.CreatedAt,
+                x.OpportunityRating, x.ResearchConfidence,
                 SourceType = x.ActiveProjectDetail != null ? x.ActiveProjectDetail.DeclaredSourceType : (ActiveProjectSourceType?)null,
                 ActiveDecision = x.ActiveProjectDetail != null ? x.ActiveProjectDetail.UserDecision : null,
                 ProspectDecision = x.BusinessProspectDetail != null ? x.BusinessProspectDetail.UserDecision : null,
@@ -138,6 +139,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             preview = OpportunityRadarEngine.Preview(x.Description),
             sourceType = x.EntityType == OpportunityEntityType.ActiveProject ? x.SourceType?.ToString() : null,
             recommendation = x.Latest?.Recommendation?.ToString(), priorityBand = x.Latest?.PriorityBand?.ToString(),
+            opportunityRating = x.OpportunityRating?.ToString(), researchConfidence = x.ResearchConfidence?.ToString(),
             budgetStatus = x.EntityType == OpportunityEntityType.ActiveProject ? (x.Latest?.BudgetStatus ?? BudgetStatus.Unknown).ToString() : null,
             summary = x.Latest?.Summary, evaluationStatus = x.Latest?.Status.ToString(), evaluationProvider = x.Latest?.Provider.ToString(),
             opportunityScore = x.Latest?.OpportunityScore, jevConfidence = x.Latest?.JevConfidence,
@@ -192,6 +194,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             opportunity.SourceUrl,
             opportunity.SourceDate,
             opportunity.ExternalId,
+            opportunityRating = opportunity.OpportunityRating?.ToString(),
             researchConfidence = opportunity.ResearchConfidence?.ToString(),
             opportunity.ResearchConfidenceReason,
             opportunity.ResearchAgent,
@@ -278,6 +281,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     {
         if (!TryActiveProjectSourceType(request.SourceType, out var sourceType)) return BadRequest(new { message = "Invalid source type." });
         if (!ValidResearchConfidence(request.Confidence?.Level)) return BadRequest(new { message = "Confidence level must be Low, Medium, or High." });
+        if (!ValidOpportunityRating(request.OpportunityRating)) return BadRequest(new { message = "Opportunity rating must be Low, Medium, or High." });
         if (!ValidUrl(request.SourceUrl)) return BadRequest(new { message = "Source URL must be an absolute http or https URL." });
         var result = await importService.ImportActiveProjectAsync(request, sourceType, false, null, ct);
         return Ok(new { result.Id, result.Created, result.Updated, result.NearDuplicateOfId });
@@ -286,8 +290,9 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     [HttpPost("import/active-projects/batch"), RequestSizeLimit(2_000_000)]
     public async Task<IActionResult> ImportActiveProjectsBatch(ImportBatchRequest<ActiveProjectImportRequest> request, CancellationToken ct)
     {
-        if (request.Items.Any(x => !TryActiveProjectSourceType(x.SourceType, out _) || !ValidResearchConfidence(x.Confidence?.Level) || !ValidUrl(x.SourceUrl)))
-            return BadRequest(new { message = "One or more items has an invalid source type, confidence level, or source URL." });
+        if (request.Items.Any(x => !TryActiveProjectSourceType(x.SourceType, out _) || !ValidResearchConfidence(x.Confidence?.Level)
+                || !ValidOpportunityRating(x.OpportunityRating) || !ValidUrl(x.SourceUrl)))
+            return BadRequest(new { message = "One or more items has an invalid source type, confidence level, opportunity rating, or source URL." });
 
         var imported = new List<object>();
         var updated = new List<object>();
@@ -306,8 +311,8 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     public async Task<IActionResult> ImportBusinessProspect(BusinessProspectImportRequest request, CancellationToken ct)
     {
         if (!ValidUrl(request.WebsiteUrl)) return BadRequest(new { message = "Website URL must be an absolute http or https URL." });
-        if (!ValidResearchConfidence(request.Confidence?.Level) || !ValidProspectType(request.ProspectType))
-            return BadRequest(new { message = "Prospect type or confidence level is invalid." });
+        if (!ValidResearchConfidence(request.Confidence?.Level) || !ValidProspectType(request.ProspectType) || !ValidOpportunityRating(request.OpportunityRating))
+            return BadRequest(new { message = "Prospect type, confidence level, or opportunity rating is invalid." });
         var result = await importService.ImportBusinessProspectAsync(request, false, null, ct);
         return Ok(new { result.Id, result.Created, result.Updated, result.NearDuplicateOfId });
     }
@@ -315,8 +320,9 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     [HttpPost("import/business-prospects/batch"), RequestSizeLimit(2_000_000)]
     public async Task<IActionResult> ImportBusinessProspectsBatch(ImportBatchRequest<BusinessProspectImportRequest> request, CancellationToken ct)
     {
-        if (request.Items.Any(x => !ValidUrl(x.WebsiteUrl) || !ValidResearchConfidence(x.Confidence?.Level) || !ValidProspectType(x.ProspectType)))
-            return BadRequest(new { message = "One or more items has an invalid website URL, prospect type, or confidence level." });
+        if (request.Items.Any(x => !ValidUrl(x.WebsiteUrl) || !ValidResearchConfidence(x.Confidence?.Level)
+                || !ValidProspectType(x.ProspectType) || !ValidOpportunityRating(x.OpportunityRating)))
+            return BadRequest(new { message = "One or more items has an invalid website URL, prospect type, confidence level, or opportunity rating." });
 
         var imported = new List<object>();
         var updated = new List<object>();
@@ -847,13 +853,15 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             evaluation?.OpportunityScore, evaluation?.JevConfidence,
             isActiveProject ? null : OpportunityRadarEngine.ResolvedProspectType(opportunity.BusinessProspectDetail?.ProspectTypeOverride,
                 evaluation?.EvaluatedProspectType, opportunity.BusinessProspectDetail?.ImportedProspectType)?.ToString(),
-            evaluation?.NeedsVerification ?? false);
+            evaluation?.NeedsVerification ?? false,
+            opportunity.OpportunityRating?.ToString(), opportunity.ResearchConfidence?.ToString());
     }
 
     private sealed record SummaryRow(int Id, string EntityType, string Title, string Preview, string? SourceType, string? Recommendation,
         string? PriorityBand, string? BudgetStatus, string? Summary, string? EvaluationStatus, string? EvaluationProvider,
         string? UserDecision, int? DuplicateOfId, bool IsSynthetic, DateTime CreatedAt, string? Industry, string? Geography, string? WebsiteDomain,
-        decimal? OpportunityScore, decimal? JevConfidence, string? ProspectType, bool NeedsVerification);
+        decimal? OpportunityScore, decimal? JevConfidence, string? ProspectType, bool NeedsVerification,
+        string? OpportunityRating, string? ResearchConfidence);
 
     private static int PriorityOrder(string? value) => value switch { "High" => 0, "Medium" => 1, "Low" => 2, _ => 3 };
     private static bool ValidUrl(string? value) => string.IsNullOrWhiteSpace(value)
@@ -874,6 +882,12 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
         catch (ArgumentException) { return false; }
     }
 
+    private static bool ValidOpportunityRating(string? value)
+    {
+        try { _ = OpportunityImportService.ParseOpportunityRating(value); return true; }
+        catch (ArgumentException) { return false; }
+    }
+
     private static bool ValidProspectType(string? value)
     {
         try { _ = OpportunityImportService.ParseProspectType(value); return true; }
@@ -884,7 +898,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
     [
         ("integration-strong", ActiveProjectSourceType.ExplicitDemand, new("Shopify supplier reconciliation",
             "We need a tool that reconciles Shopify orders with supplier spreadsheets, flags mismatches, and produces a daily exception report within 8 weeks.",
-            "ExplicitDemand", Budget: "$8,000")),
+            "ExplicitDemand", Budget: "$8,000", OpportunityRating: "High")),
         ("automation-semantic", ActiveProjectSourceType.ExplicitDemand, new("Remove daily order rekeying",
             "Our operations coordinator copies new orders from email attachments into three vendor systems every morning. We want the repeated entry removed and failures surfaced for review.",
             "ExplicitDemand", Budget: "$6,000")),
@@ -920,7 +934,7 @@ public class OpportunityRadarController(ApplicationDbContext db, IEnumerable<IOp
             [new EvidenceFact("Established dental practice, well known locally, 5-star reviews and loyal customers for over fifteen years.", "https://example-riverside-dental.test", null),
              new EvidenceFact("The website is outdated, not mobile friendly, and has no online booking system.", "https://example-riverside-dental.test", null)],
             "https://example-riverside-dental.test", "Local", "Healthcare",
-            Fit: "The practice needs a new website with online booking.")),
+            Fit: "The practice needs a new website with online booking.", OpportunityRating: "High")),
         ("prospect-already-modern", new("Crestline Auto Body",
             [new EvidenceFact("Well-regarded auto body shop with a modern website, mobile friendly, recently redesigned, with online booking already in place.", "https://example-crestline-autobody.test", null)],
             "https://example-crestline-autobody.test", "Local", "Automotive")),

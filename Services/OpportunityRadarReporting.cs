@@ -14,7 +14,7 @@ public static class OpportunityRadarReporting
             new[] { "id", "entity_type", "title", "description", "declared_source_type", "source_name", "source_url", "source_date", "external_id",
                 "synthetic", "duplicate_of_id", "evaluation_status", "provider", "model", "question_set_version", "recommendation",
                 "priority_band", "budget_status", "website_url", "website_domain", "geography", "industry", "factors", "concerns",
-                "research_confidence", "research_confidence_reason", "research_agent", "imported_prospect_type", "evaluated_prospect_type",
+                "opportunity_rating", "research_confidence", "research_confidence_reason", "research_agent", "imported_prospect_type", "evaluated_prospect_type",
                 "prospect_type_override", "opportunity_score", "jev_confidence", "needs_verification", "evaluation_checks",
                 "rubric_version", "evaluation_origin", "effective_weights", "user_decision", "notes", "evaluated_at" }
         };
@@ -45,7 +45,7 @@ public static class OpportunityRadarReporting
                 isActiveProject ? null : opportunity.BusinessProspectDetail?.Geography,
                 isActiveProject ? null : opportunity.BusinessProspectDetail?.Industry,
                 result is null ? null : string.Join(" | ", result.Factors.Select(x => $"{x.Label}: {x.Score:0.#}/100")),
-                result is null ? null : string.Join(" | ", result.Concerns), opportunity.ResearchConfidence?.ToString(),
+                result is null ? null : string.Join(" | ", result.Concerns), opportunity.OpportunityRating?.ToString(), opportunity.ResearchConfidence?.ToString(),
                 opportunity.ResearchConfidenceReason, opportunity.ResearchAgent,
                 opportunity.BusinessProspectDetail?.ImportedProspectType?.ToString(), evaluation?.EvaluatedProspectType?.ToString(),
                 opportunity.BusinessProspectDetail?.ProspectTypeOverride?.ToString(), evaluation?.OpportunityScore?.ToString(CultureInfo.InvariantCulture),

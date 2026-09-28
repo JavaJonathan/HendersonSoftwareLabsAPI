@@ -41,6 +41,7 @@ public record ActiveProjectImportRequest(
     [StringLength(1000)] string? Fit = null,
     [StringLength(1000)] string? ProposalAngle = null,
     [StringLength(1000)] string? Risk = null,
+    string? OpportunityRating = null,
     ConfidenceInfo? Confidence = null,
     [StringLength(100)] string? ResearchAgent = null);
 
@@ -55,6 +56,7 @@ public record BusinessProspectImportRequest(
     [StringLength(1000)] string? Fit = null,
     [StringLength(1000)] string? EntryOffer = null,
     [StringLength(1000)] string? Risk = null,
+    string? OpportunityRating = null,
     ConfidenceInfo? Confidence = null,
     [StringLength(100)] string? ResearchAgent = null) : IValidatableObject
 {
@@ -89,6 +91,13 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             ? parsed : throw new ArgumentException("Research confidence must be Low, Medium, or High.");
     }
 
+    public static PriorityBand? ParseOpportunityRating(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return Enum.TryParse<PriorityBand>(value.Trim(), true, out var parsed) && Enum.IsDefined(parsed)
+            ? parsed : throw new ArgumentException("Opportunity rating must be Low, Medium, or High.");
+    }
+
     public static BusinessProspectType? ParseProspectType(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
@@ -104,6 +113,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
         var passages = OpportunityRadarEngine.BuildActiveProjectPassages(request.Request, request.Budget, request.Competition);
         var fingerprint = OpportunityRadarEngine.Fingerprint(request.Title, description, request.SourceUrl);
         var researchConfidence = ParseResearchConfidence(request.Confidence?.Level);
+        var opportunityRating = ParseOpportunityRating(request.OpportunityRating);
         var trimmedExternalId = request.ExternalId?.Trim();
         Opportunity? existing = null;
         if (!string.IsNullOrEmpty(trimmedExternalId))
@@ -123,6 +133,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             existing.SourceUrl = request.SourceUrl?.Trim();
             existing.SourceDate = request.SourceDate?.ToUniversalTime();
             existing.ExternalId = trimmedExternalId;
+            existing.OpportunityRating = opportunityRating;
             existing.ResearchConfidence = researchConfidence;
             existing.ResearchConfidenceReason = request.Confidence?.Reason?.Trim();
             existing.ResearchAgent = request.ResearchAgent?.Trim();
@@ -151,7 +162,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             Title = request.Title.Trim(), Description = description,
             SourceName = request.SourceName?.Trim(), SourceUrl = request.SourceUrl?.Trim(), SourceDate = request.SourceDate?.ToUniversalTime(),
             ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages),
-            ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
+            OpportunityRating = opportunityRating, ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
             Fingerprint = fingerprint, DuplicateOfId = near?.Id, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
             CreatedAt = now, UpdatedAt = now,
             ActiveProjectDetail = new ActiveProjectDetail
@@ -176,6 +187,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
         var normalizedName = OpportunityRadarEngine.NormalizeBusinessName(request.BusinessName);
         var prospectType = ParseProspectType(request.ProspectType);
         var researchConfidence = ParseResearchConfidence(request.Confidence?.Level);
+        var opportunityRating = ParseOpportunityRating(request.OpportunityRating);
         var normalizedDomain = OpportunityRadarEngine.NormalizeWebsiteDomain(request.WebsiteUrl);
         var trimmedExternalId = request.ExternalId?.Trim();
         var now = DateTime.UtcNow;
@@ -201,6 +213,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             existing.SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages);
             existing.SourceDate = derivedSourceDate == DateTime.MinValue ? null : derivedSourceDate;
             existing.ExternalId = trimmedExternalId;
+            existing.OpportunityRating = opportunityRating;
             existing.ResearchConfidence = researchConfidence;
             existing.ResearchConfidenceReason = request.Confidence?.Reason?.Trim();
             existing.ResearchAgent = request.ResearchAgent?.Trim();
@@ -233,7 +246,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             Title = request.BusinessName.Trim(), Description = description,
             SourceDate = derivedSourceDate == DateTime.MinValue ? null : derivedSourceDate,
             ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages),
-            ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
+            OpportunityRating = opportunityRating, ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
             Fingerprint = "", DuplicateOfId = near?.Id, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
             CreatedAt = now, UpdatedAt = now,
             BusinessProspectDetail = new BusinessProspectDetail

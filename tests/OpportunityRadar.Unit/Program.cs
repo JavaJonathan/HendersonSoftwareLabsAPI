@@ -337,6 +337,7 @@ var prospectOpportunity = MakeBusinessProspect(
 prospectOpportunity.ResearchConfidence = ResearchConfidence.High;
 prospectOpportunity.ResearchConfidenceReason = "Sourcing agent reason that must stay out of the provider request.";
 prospectOpportunity.ResearchAgent = "private-agent-name";
+prospectOpportunity.OpportunityRating = PriorityBand.Low;
 prospectOpportunity.BusinessProspectDetail!.ImportedProspectType = BusinessProspectType.OperationalPain;
 var prospectResponse = JsonSerializer.Serialize(new
 {
@@ -377,8 +378,10 @@ Check(prospectOutcome.QuestionSetVersion.StartsWith(JevBusinessProspectEvaluator
 Check(prospectHandler.LastRequestBody is not null
       && !prospectHandler.LastRequestBody.Contains("private-agent-name", StringComparison.Ordinal)
       && !prospectHandler.LastRequestBody.Contains("Sourcing agent reason", StringComparison.Ordinal)
-      && !prospectHandler.LastRequestBody.Contains("OperationalPain", StringComparison.Ordinal),
-    "The Jev request must be blind to imported agent identity, confidence, and classification.");
+      && !prospectHandler.LastRequestBody.Contains("OperationalPain", StringComparison.Ordinal)
+      && !prospectHandler.LastRequestBody.Contains("opportunityRating", StringComparison.OrdinalIgnoreCase)
+      && !prospectHandler.LastRequestBody.Contains("opportunity_rating", StringComparison.OrdinalIgnoreCase),
+    "The Jev request must be blind to imported agent identity, confidence, classification, and opportunity rating.");
 Check(prospectHandler.LastRequestBody is not null && !prospectHandler.LastRequestBody.Contains("hsl_delivery_fit_passage", StringComparison.Ordinal),
     "The Jev request must not ask for a passage citation on hsl_delivery_fit.");
 var prospectAssessment = OpportunityRadarV2.DeserializeBusiness(prospectOutcome.AssessmentJson);
@@ -455,6 +458,15 @@ Check(combineAssessment is not null && Math.Abs(combineAssessment.Factors["painE
 Check(OpportunityImportService.ParseProspectType("OperationalPain") == BusinessProspectType.OperationalPain,
     "An explicit prospect type value must still parse.");
 Check(OpportunityImportService.ParseProspectType(null) is null, "An omitted prospect type must resolve to null, not throw.");
+
+Check(OpportunityImportService.ParseOpportunityRating("High") == PriorityBand.High, "An explicit opportunity rating value must parse.");
+Check(OpportunityImportService.ParseOpportunityRating(null) is null, "An omitted opportunity rating must resolve to null, not throw.");
+try
+{
+    OpportunityImportService.ParseOpportunityRating("Extreme");
+    failures.Add("An invalid opportunity rating must throw, not silently pass.");
+}
+catch (ArgumentException) { }
 
 // Regression: EvaluationCheckSeverity (and the other enums embedded in ResultJson) used to serialize as a
 // raw number, so the frontend's `check.severity === 'Review'` comparison against the TypeScript string
