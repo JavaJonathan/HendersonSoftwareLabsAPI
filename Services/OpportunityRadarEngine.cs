@@ -185,10 +185,16 @@ public static class OpportunityRadarEngine
 
     public static double Similarity(string left, string right)
     {
-        var a = Tokens(left);
-        var b = Tokens(right);
-        if (a.Count == 0 || b.Count == 0) return 0;
-        return (double)a.Intersect(b).Count() / a.Union(b).Count();
+        return Similarity(Tokens(left), right);
+    }
+
+    internal static HashSet<string> SimilarityTokens(string value) => Tokens(value);
+
+    internal static double Similarity(HashSet<string> leftTokens, string right)
+    {
+        var rightTokens = Tokens(right);
+        if (leftTokens.Count == 0 || rightTokens.Count == 0) return 0;
+        return (double)leftTokens.Intersect(rightTokens).Count() / leftTokens.Union(rightTokens).Count();
     }
 
     public static string NormalizeBusinessName(string name) => Normalize(name);

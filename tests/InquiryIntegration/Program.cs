@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using HendersonSoftwareLabsAPI.Controllers;
 using HendersonSoftwareLabsAPI.Data;
 using HendersonSoftwareLabsAPI.Entities;
 using HendersonSoftwareLabsAPI.Services;
@@ -74,6 +75,31 @@ try
         return await http.SendAsync(request);
     }
     static void Check(bool condition, string label) { if (!condition) throw new Exception(label); Console.WriteLine("PASS " + label); }
+    var activeRequest = new ActiveProjectImportRequest("Customer portal build", "Build a customer portal for account access.",
+        SourceUrl: "https://example.com/projects/one");
+    var activeFirst = await (await Send("POST", "/api/admin/opportunity-radar/import/active-projects", activeRequest, adminToken))
+        .Content.ReadFromJsonAsync<JsonElement>();
+    var activeSecond = await (await Send("POST", "/api/admin/opportunity-radar/import/active-projects",
+        activeRequest with { SourceUrl = "https://example.com/projects/two" }, adminToken)).Content.ReadFromJsonAsync<JsonElement>();
+    Check(activeSecond.GetProperty("created").GetBoolean()
+        && activeSecond.GetProperty("nearDuplicateOfId").GetInt32() == activeFirst.GetProperty("id").GetInt32(),
+        "single Active Project import finds a near duplicate");
+
+    var businessBatch = await (await Send("POST", "/api/admin/opportunity-radar/import/business-prospects/batch",
+        new OpportunityRadarController.ImportBatchRequest<BusinessProspectImportRequest>(null,
+        [
+            new BusinessProspectImportRequest("Acme Roofing Services",
+                [new EvidenceFact("The business has a visible local customer base.", null, null)],
+                WebsiteUrl: "https://acme-roofing-one.example"),
+            new BusinessProspectImportRequest("Acme Roofing Service",
+                [new EvidenceFact("The business has a visible local customer base.", null, null)],
+                WebsiteUrl: "https://acme-roofing-two.example")
+        ]), adminToken)).Content.ReadFromJsonAsync<JsonElement>();
+    var importedBusinesses = businessBatch.GetProperty("imported");
+    Check(importedBusinesses.GetArrayLength() == 2
+        && importedBusinesses[1].GetProperty("nearDuplicateOfId").GetInt32() == importedBusinesses[0].GetProperty("id").GetInt32(),
+        "Business Prospect batch sees earlier imported items");
+
     object Payload(Guid? id = null, string name = " Test Visitor ", string message = " Test inquiry ", string email = "visitor@example.test", string website = "") => new { submissionId = id ?? Guid.NewGuid(), name, message, email, website };
     var submission = Guid.NewGuid();
     var response = await Send("POST", "/api/contact", Payload(submission));

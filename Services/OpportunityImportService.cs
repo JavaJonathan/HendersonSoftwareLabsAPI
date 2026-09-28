@@ -151,10 +151,10 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             return new OpportunityImportResult(existing.Id, false, true, existing.DuplicateOfId);
         }
 
-        var candidates = await db.Opportunities.AsNoTracking().Where(x => x.EntityType == OpportunityEntityType.ActiveProject)
-            .Select(x => new { x.Id, x.Title, x.Description }).ToListAsync(ct);
-        var near = candidates.Select(x => new { x.Id, Similarity = OpportunityRadarEngine.Similarity($"{request.Title} {description}", $"{x.Title} {x.Description}") })
-            .Where(x => x.Similarity >= OpportunityRadarThresholds.ActiveProjectNearDuplicateSimilarity).OrderByDescending(x => x.Similarity).FirstOrDefault();
+        var nearId = await FindNearDuplicateAsync(
+            db.Opportunities.AsNoTracking().Where(x => x.EntityType == OpportunityEntityType.ActiveProject)
+                .Select(x => new NearDuplicateCandidate(x.Id, x.Title + " " + x.Description)).AsAsyncEnumerable(),
+            $"{request.Title} {description}", OpportunityRadarThresholds.ActiveProjectNearDuplicateSimilarity, ct);
 
         var opportunity = new Opportunity
         {
@@ -163,7 +163,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             SourceName = request.SourceName?.Trim(), SourceUrl = request.SourceUrl?.Trim(), SourceDate = request.SourceDate?.ToUniversalTime(),
             ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages),
             OpportunityRating = opportunityRating, ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
-            Fingerprint = fingerprint, DuplicateOfId = near?.Id, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
+            Fingerprint = fingerprint, DuplicateOfId = nearId, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
             CreatedAt = now, UpdatedAt = now,
             ActiveProjectDetail = new ActiveProjectDetail
             {
@@ -175,7 +175,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
         };
         db.Opportunities.Add(opportunity);
         await db.SaveChangesAsync(ct);
-        return new OpportunityImportResult(opportunity.Id, true, false, near?.Id);
+        return new OpportunityImportResult(opportunity.Id, true, false, nearId);
     }
 
     public async Task<OpportunityImportResult> ImportBusinessProspectAsync(BusinessProspectImportRequest request,
@@ -235,10 +235,10 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             return new OpportunityImportResult(existing.Id, false, true, existing.DuplicateOfId);
         }
 
-        var candidates = await db.Opportunities.AsNoTracking().Where(x => x.EntityType == OpportunityEntityType.BusinessProspect)
-            .Select(x => new { x.Id, Name = x.BusinessProspectDetail!.NormalizedBusinessName }).ToListAsync(ct);
-        var near = candidates.Select(x => new { x.Id, Similarity = OpportunityRadarEngine.Similarity(normalizedName, x.Name) })
-            .Where(x => x.Similarity >= OpportunityRadarThresholds.BusinessProspectNearDuplicateSimilarity).OrderByDescending(x => x.Similarity).FirstOrDefault();
+        var nearId = await FindNearDuplicateAsync(
+            db.Opportunities.AsNoTracking().Where(x => x.EntityType == OpportunityEntityType.BusinessProspect)
+                .Select(x => new NearDuplicateCandidate(x.Id, x.BusinessProspectDetail!.NormalizedBusinessName)).AsAsyncEnumerable(),
+            normalizedName, OpportunityRadarThresholds.BusinessProspectNearDuplicateSimilarity, ct);
 
         var opportunity = new Opportunity
         {
@@ -247,7 +247,7 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
             SourceDate = derivedSourceDate == DateTime.MinValue ? null : derivedSourceDate,
             ExternalId = trimmedExternalId, SourcePassagesJson = OpportunityRadarEngine.SerializePassages(passages),
             OpportunityRating = opportunityRating, ResearchConfidence = researchConfidence, ResearchConfidenceReason = request.Confidence?.Reason?.Trim(), ResearchAgent = request.ResearchAgent?.Trim(),
-            Fingerprint = "", DuplicateOfId = near?.Id, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
+            Fingerprint = "", DuplicateOfId = nearId, IsSynthetic = synthetic, SyntheticKey = syntheticKey,
             CreatedAt = now, UpdatedAt = now,
             BusinessProspectDetail = new BusinessProspectDetail
             {
@@ -258,7 +258,28 @@ public sealed class OpportunityImportService(ApplicationDbContext db) : IOpportu
         };
         db.Opportunities.Add(opportunity);
         await db.SaveChangesAsync(ct);
-        return new OpportunityImportResult(opportunity.Id, true, false, near?.Id);
+        return new OpportunityImportResult(opportunity.Id, true, false, nearId);
+    }
+
+    internal sealed record NearDuplicateCandidate(int Id, string Text);
+
+    internal static async Task<int?> FindNearDuplicateAsync(IAsyncEnumerable<NearDuplicateCandidate> candidates,
+        string incomingText, double threshold, CancellationToken ct)
+    {
+        var incomingTokens = OpportunityRadarEngine.SimilarityTokens(incomingText);
+        if (incomingTokens.Count == 0) return null;
+
+        int? bestId = null;
+        var bestSimilarity = 0d;
+        await foreach (var candidate in candidates.WithCancellation(ct))
+        {
+            var similarity = OpportunityRadarEngine.Similarity(incomingTokens, candidate.Text);
+            // Keep the first candidate when scores tie, as the prior stable OrderByDescending did.
+            if (similarity < threshold || (bestId is not null && similarity <= bestSimilarity)) continue;
+            bestId = candidate.Id;
+            bestSimilarity = similarity;
+        }
+        return bestId;
     }
 
     // Reimporting a record updates its source material in place (see the class doc comment), but that

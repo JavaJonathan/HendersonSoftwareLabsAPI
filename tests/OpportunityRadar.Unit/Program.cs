@@ -67,6 +67,54 @@ Opportunity MakeBusinessProspect(string title, string evidenceText, string? indu
 
 var preferences = MakePreferences();
 
+async IAsyncEnumerable<OpportunityImportService.NearDuplicateCandidate> StreamCandidates(
+    IEnumerable<OpportunityImportService.NearDuplicateCandidate> candidates)
+{
+    foreach (var candidate in candidates)
+    {
+        await Task.Yield();
+        yield return candidate;
+    }
+}
+
+int? OriginalNearDuplicate(string incoming, double threshold,
+    IEnumerable<OpportunityImportService.NearDuplicateCandidate> candidates) => candidates
+    .Select(x => new { x.Id, Score = OpportunityRadarEngine.Similarity(incoming, x.Text) })
+    .Where(x => x.Score >= threshold)
+    .OrderByDescending(x => x.Score)
+    .FirstOrDefault()?.Id;
+
+var activeCandidates = new[]
+{
+    new OpportunityImportService.NearDuplicateCandidate(1, "Build customer portal"),
+    new OpportunityImportService.NearDuplicateCandidate(2, "Build customer portal website"),
+    new OpportunityImportService.NearDuplicateCandidate(3, "Build customer portal website")
+};
+const string activeText = "Build customer portal website";
+var activeMatch = await OpportunityImportService.FindNearDuplicateAsync(StreamCandidates(activeCandidates), activeText,
+    OpportunityRadarThresholds.ActiveProjectNearDuplicateSimilarity, CancellationToken.None);
+Check(activeMatch == 2 && activeMatch == OriginalNearDuplicate(activeText,
+        OpportunityRadarThresholds.ActiveProjectNearDuplicateSimilarity, activeCandidates),
+    "Streamed Active Project matching must keep the highest score and the first tied candidate.");
+
+var businessCandidates = new[]
+{
+    new OpportunityImportService.NearDuplicateCandidate(4, "acme plumbing services"),
+    new OpportunityImportService.NearDuplicateCandidate(5, "acme roofing service"),
+    new OpportunityImportService.NearDuplicateCandidate(6, "acme roofing service")
+};
+const string businessText = "acme roofing services";
+var businessMatch = await OpportunityImportService.FindNearDuplicateAsync(StreamCandidates(businessCandidates), businessText,
+    OpportunityRadarThresholds.BusinessProspectNearDuplicateSimilarity, CancellationToken.None);
+Check(businessMatch == 5 && businessMatch == OriginalNearDuplicate(businessText,
+        OpportunityRadarThresholds.BusinessProspectNearDuplicateSimilarity, businessCandidates),
+    "Streamed Business Prospect matching must preserve plural handling and the first tied candidate.");
+Check(await OpportunityImportService.FindNearDuplicateAsync(StreamCandidates(activeCandidates), "!!!",
+        OpportunityRadarThresholds.ActiveProjectNearDuplicateSimilarity, CancellationToken.None) is null
+    && OpportunityRadarEngine.Similarity("boss", "bos") == 1
+    && OpportunityRadarEngine.Similarity("gas", "ga") == 0,
+    "Empty token sets and the existing plural rule must keep their similarity behavior.");
+
 // The business profile always shapes both Jev prompts now, there is no draft/active distinction -
 // its content is what changes, not whether it's "on".
 var defaultProfile = OpportunityRadarEngine.ReadBusinessProfile(preferences);
